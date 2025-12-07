@@ -19,12 +19,14 @@ import (
 	mapset "github.com/deckarep/golang-set/v2"
 )
 
+const remoteCheckInterval = time.Duration(1 * time.Hour)
+
 var supportedExt = mapset.NewSet(
 	".jpeg", ".jpg", ".JPEG", ".JPG",
 	".png", ".PNG",
 )
 
-type AWSClient struct {
+type RemoteManager struct {
 	client *s3.Client
 
 	profile  string
@@ -33,7 +35,7 @@ type AWSClient struct {
 	outputPath string
 }
 
-func NewAWSClient() (*AWSClient, error) {
+func NewRemoteManager() (*RemoteManager, error) {
 	// if empty then defaults to current directory
 	outputPath := os.Getenv("DPF_S3_OUTPUT_PATH")
 	if outputPath == "" {
@@ -63,7 +65,7 @@ func NewAWSClient() (*AWSClient, error) {
 	// Create an Amazon S3 service client
 	client := s3.NewFromConfig(cfg)
 
-	return &AWSClient{
+	return &RemoteManager{
 		client:     client,
 		profile:    awsProfileName,
 		s3Bucket:   s3Bucket,
@@ -71,7 +73,7 @@ func NewAWSClient() (*AWSClient, error) {
 	}, nil
 }
 
-func (a *AWSClient) GetS3Objects(ctx context.Context) ([]s3types.Object, error) {
+func (a *RemoteManager) GetS3Objects(ctx context.Context) ([]s3types.Object, error) {
 	// Get the first page of results for ListObjectsV2 for a bucket
 	output, err := a.client.ListObjectsV2(
 		ctx,
@@ -86,7 +88,7 @@ func (a *AWSClient) GetS3Objects(ctx context.Context) ([]s3types.Object, error) 
 	return output.Contents, nil
 }
 
-func (a *AWSClient) DownloadObject(ctx context.Context, name string) error {
+func (a *RemoteManager) DownloadObject(ctx context.Context, name string) error {
 	downloader := manager.NewDownloader(a.client)
 
 	f, err := os.Create(filepath.Join(a.outputPath, name))
@@ -104,7 +106,7 @@ func (a *AWSClient) DownloadObject(ctx context.Context, name string) error {
 	return nil
 }
 
-func (a *AWSClient) getLocalFiles() (mapset.Set[string], error) {
+func (a *RemoteManager) getLocalFiles() (mapset.Set[string], error) {
 	dirs, err := os.ReadDir(a.outputPath)
 	if err != nil {
 		return nil, fmt.Errorf("unable to read directory, %s, %w", a.outputPath, err)
@@ -125,7 +127,7 @@ func (a *AWSClient) getLocalFiles() (mapset.Set[string], error) {
 	return localFiles, nil
 }
 
-func (a *AWSClient) getRemoteFiles(ctx context.Context) (mapset.Set[string], error) {
+func (a *RemoteManager) getRemoteFiles(ctx context.Context) (mapset.Set[string], error) {
 	remoteFiles := mapset.NewSet[string]()
 	objects, err := a.GetS3Objects(ctx)
 	if err != nil {
@@ -145,7 +147,7 @@ func (a *AWSClient) getRemoteFiles(ctx context.Context) (mapset.Set[string], err
 	return remoteFiles, nil
 }
 
-func (a *AWSClient) SyncFolder(ctx context.Context) error {
+func (a *RemoteManager) SyncFolder(ctx context.Context) error {
 	localFiles, err := a.getLocalFiles()
 	if err != nil {
 		return err
@@ -182,15 +184,22 @@ func (a *AWSClient) SyncFolder(ctx context.Context) error {
 	return nil
 }
 
+func (m *RemoteManager) Run() {
+	ticker := time.NewTicker(remoteCheckInterval)
+	for range ticker.C {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(30*time.Minute))
+		if err := m.SyncFolder(ctx); err != nil {
+			slog.Warn("error while syncing with remote", "error", err)
+		}
+		cancel()
+	}
+}
+
 func main() {
-	client, err := NewAWSClient()
+	manager, err := NewRemoteManager()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(30*time.Minute))
-	defer cancel()
-	if err := client.SyncFolder(ctx); err != nil {
-		log.Fatal(err)
-	}
+	manager.Run()
 }
