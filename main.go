@@ -7,6 +7,8 @@ import (
 	"log"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -14,6 +16,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	mapset "github.com/deckarep/golang-set/v2"
+)
+
+var supportedExt = mapset.NewSet(
+	".jpeg", ".jpg", ".JPEG", ".JPG",
+	".png", ".PNG",
 )
 
 type AWSClient struct {
@@ -28,6 +36,9 @@ type AWSClient struct {
 func NewAWSClient() (*AWSClient, error) {
 	// if empty then defaults to current directory
 	outputPath := os.Getenv("DPF_S3_OUTPUT_PATH")
+	if outputPath == "" {
+		outputPath = "."
+	}
 
 	awsProfileName := os.Getenv("DPF_AWS_PROFILE")
 	if awsProfileName == "" {
@@ -78,7 +89,7 @@ func (a *AWSClient) GetS3Objects(ctx context.Context) ([]s3types.Object, error) 
 func (a *AWSClient) DownloadObject(ctx context.Context, name string) error {
 	downloader := manager.NewDownloader(a.client)
 
-	f, err := os.Create(name)
+	f, err := os.Create(filepath.Join(a.outputPath, name))
 	if err != nil {
 		return fmt.Errorf("unable to create file for s3 download, %s, %w", name, err)
 	}
@@ -93,26 +104,93 @@ func (a *AWSClient) DownloadObject(ctx context.Context, name string) error {
 	return nil
 }
 
+func (a *AWSClient) getLocalFiles() (mapset.Set[string], error) {
+	dirs, err := os.ReadDir(a.outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("unable to read directory, %s, %w", a.outputPath, err)
+	}
+
+	localFiles := mapset.NewSet[string]()
+	for dir := range slices.Values(dirs) {
+		name := dir.Name()
+		if !supportedExt.Contains(filepath.Ext(name)) {
+			continue
+		}
+		localFiles.Add(name)
+	}
+
+	if localFiles.Cardinality() == 0 {
+		slog.Info("no local files found")
+	}
+	return localFiles, nil
+}
+
+func (a *AWSClient) getRemoteFiles(ctx context.Context) (mapset.Set[string], error) {
+	remoteFiles := mapset.NewSet[string]()
+	objects, err := a.GetS3Objects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for object := range slices.Values(objects) {
+		name := aws.ToString(object.Key)
+		if !supportedExt.Contains(filepath.Ext(name)) {
+			continue
+		}
+		remoteFiles.Add(name)
+	}
+
+	if remoteFiles.Cardinality() == 0 {
+		slog.Info("no remote files found")
+	}
+	return remoteFiles, nil
+}
+
+func (a *AWSClient) SyncFolder(ctx context.Context) error {
+	localFiles, err := a.getLocalFiles()
+	if err != nil {
+		return err
+	}
+
+	remoteFiles, err := a.getRemoteFiles(ctx)
+	if err != nil {
+		return err
+	}
+
+	toDelete := localFiles.Difference(remoteFiles).ToSlice()
+	toDownload := remoteFiles.Difference(localFiles).ToSlice()
+	if len(toDelete) == 0 && len(toDownload) == 0 {
+		slog.Info("local and remote are in sync")
+		return nil
+	}
+	if len(toDelete) > 0 {
+		slog.Info("deleting local files", "count", len(toDelete), "names", toDelete)
+		for name := range slices.Values(toDelete) {
+			if err := os.Remove(name); err != nil {
+				slog.Warn("unable to remove local file", "error", err)
+			}
+		}
+	}
+	if len(toDownload) > 0 {
+		slog.Info("adding files", "count", len(toDownload), "names", toDownload)
+		for name := range slices.Values(toDownload) {
+			err := a.DownloadObject(ctx, name)
+			if err != nil {
+				slog.Warn("error while downloading s3 object", "name", name, "error", err)
+			}
+		}
+	}
+	return nil
+}
+
 func main() {
 	client, err := NewAWSClient()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	ctxListObj, cancelListObj := context.WithTimeout(context.Background(), time.Duration(10*time.Second))
-	defer cancelListObj()
-	objects, err := client.GetS3Objects(ctxListObj)
-	if err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(30*time.Minute))
+	defer cancel()
+	if err := client.SyncFolder(ctx); err != nil {
 		log.Fatal(err)
-	}
-	for _, object := range objects {
-		name := aws.ToString(object.Key)
-		fmt.Println(name)
-		ctxDownload, cancelDownload := context.WithTimeout(context.Background(), time.Duration(10*time.Second))
-		err := client.DownloadObject(ctxDownload, name)
-		cancelDownload()
-		if err != nil {
-			slog.Warn("error while downloading s3 object", "name", name, "error", err)
-		}
 	}
 }
