@@ -202,9 +202,10 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 			encodedName := url.PathEscape(photo.PhotoName)
 			imageURL := fmt.Sprintf("/photos/%d/%s/image", photo.Category, encodedName)
 			html += fmt.Sprintf(
-				"  <img src=\"%s\" alt=\"%s\" class=\"photo-thumbnail\" />\n",
+				"  <img src=\"%s\" alt=\"%s\" class=\"photo-thumbnail\" onclick=\"openPhotoModal('%s')\" />\n",
 				imageURL,
 				photo.PhotoName,
+				imageURL,
 			)
 		}
 
@@ -506,9 +507,10 @@ func (ws *WebServer) handleUIPhotos(c *gin.Context) {
 		encodedName := url.PathEscape(photo.PhotoName)
 		imageURL := fmt.Sprintf("/photos/%d/%s/image", photo.Category, encodedName)
 		html += fmt.Sprintf(
-			"  <img src=\"%s\" alt=\"%s\" class=\"photo-thumbnail\" />\n",
+			"  <img src=\"%s\" alt=\"%s\" class=\"photo-thumbnail\" onclick=\"openPhotoModal('%s')\" />\n",
 			imageURL,
 			photo.PhotoName,
+			imageURL,
 		)
 	}
 	html += "</div>"
@@ -549,7 +551,7 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
         .category-header {
             display: flex;
             align-items: center;
-            justify-content: space-between;
+            gap: 15px;
             margin-bottom: 15px;
         }
         
@@ -557,12 +559,13 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
             font-size: 24px;
             font-weight: 600;
             color: #333;
+            margin: 0;
         }
         
         .upload-form {
             display: inline-flex;
             align-items: center;
-            gap: 10px;
+            gap: 8px;
         }
         
         .upload-button {
@@ -653,6 +656,46 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
             color: #666;
             font-style: italic;
         }
+        
+        .photo-modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.9);
+            cursor: pointer;
+        }
+        
+        .photo-modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .photo-modal-content {
+            max-width: 90%;
+            max-height: 90%;
+            object-fit: contain;
+            border-radius: 4px;
+        }
+        
+        .photo-modal-close {
+            position: absolute;
+            top: 20px;
+            right: 30px;
+            color: #fff;
+            font-size: 40px;
+            font-weight: bold;
+            cursor: pointer;
+            z-index: 1001;
+        }
+        
+        .photo-modal-close:hover {
+            color: #ccc;
+        }
     </style>
 </head>
 <body>
@@ -677,7 +720,7 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
                       hx-swap="innerHTML"
                       hx-indicator="#upload-indicator"
                       id="upload-form">
-                    <label for="file-input" class="file-input-label">Upload Photo</label>
+                    <label for="file-input" class="file-input-label">Upload</label>
                     <input type="file" 
                            id="file-input" 
                            name="file" 
@@ -697,6 +740,34 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
             </div>
         </div>
     </div>
+    
+    <div id="photo-modal" class="photo-modal" onclick="closePhotoModal()">
+        <span class="photo-modal-close" onclick="event.stopPropagation(); closePhotoModal()">&times;</span>
+        <img id="photo-modal-img" class="photo-modal-content" src="" alt="Full size photo" onclick="event.stopPropagation();">
+    </div>
+    
+    <script>
+        function openPhotoModal(imageUrl) {
+            const modal = document.getElementById('photo-modal');
+            const modalImg = document.getElementById('photo-modal-img');
+            modalImg.src = imageUrl;
+            modal.classList.add('active');
+            document.body.style.overflow = 'hidden';
+        }
+        
+        function closePhotoModal() {
+            const modal = document.getElementById('photo-modal');
+            modal.classList.remove('active');
+            document.body.style.overflow = 'auto';
+        }
+        
+        // Close modal on Escape key
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'Escape') {
+                closePhotoModal();
+            }
+        });
+    </script>
 </body>
 </html>`
 

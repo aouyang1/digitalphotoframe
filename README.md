@@ -1,2 +1,143 @@
 # digitalphotoframe
 personal digital photo frame setup for raspberry pi
+
+## Requirements
+
+### System Dependencies
+
+- **imv** - Image viewer for Wayland (required for slideshow)
+- **imgp** - Image processing tool (required for image rotation)
+
+Install on Debian/Ubuntu:
+```bash
+sudo apt-get install imv-wayland imgp
+```
+
+### AWS Setup
+
+1. **Install AWS CLI**
+   ```bash
+   # On macOS
+   brew install awscli
+   
+   # On Linux
+   curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+   unzip awscliv2.zip
+   sudo ./aws/install
+   ```
+
+2. **Create AWS Profile**
+   ```bash
+   aws configure --profile <your-profile-name>
+   ```
+   Enter your AWS Access Key ID, Secret Access Key, region, and output format when prompted.
+
+3. **IAM User Policy**
+   
+   Create an IAM user with the following policy. Replace the placeholders:
+   - `{date}` - Current date (e.g., "2012-10-17")
+   - `{region}` - AWS region (e.g., "us-east-1")
+   - `{accesspoint_id}` - S3 Access Point ID (if using access points)
+   - `{accesspoint_name}` - S3 Access Point name (if using access points)
+   - `{s3_bucket_name}` - Your S3 bucket name
+
+   ```json
+   {
+       "Version": "2012-10-17",
+       "Statement": [
+           {
+               "Sid": "VisualEditor0",
+               "Effect": "Allow",
+               "Action": [
+                   "s3:GetObject",
+                   "s3:ListBucket"
+               ],
+               "Resource": [
+                   "arn:aws:s3:{region}:{accesspoint_id}:accesspoint/{accesspoint_name}/object/*",
+                   "arn:aws:s3:{region}:{accesspoint_id}:accesspoint/{accesspoint_name}",
+                   "arn:aws:s3:::{s3_bucket_name}",
+                   "arn:aws:s3:::{s3_bucket_name}/*"
+               ]
+           }
+       ]
+   }
+   ```
+
+   **Note:** If you're not using S3 Access Points, you can simplify the policy to:
+   ```json
+   {
+       "Version": "2012-10-17",
+       "Statement": [
+           {
+               "Sid": "VisualEditor0",
+               "Effect": "Allow",
+               "Action": [
+                   "s3:GetObject",
+                   "s3:ListBucket"
+               ],
+               "Resource": [
+                   "arn:aws:s3:::{s3_bucket_name}",
+                   "arn:aws:s3:::{s3_bucket_name}/*"
+               ]
+           }
+       ]
+   }
+   ```
+
+### Environment Variables
+
+Set the following environment variables before running the application:
+
+- **`ROOT_PATH_DPF`** (Required)
+  - Root directory path for storing photos and database
+  - Example: `export ROOT_PATH_DPF=/home/user/photos`
+
+- **`DPF_AWS_PROFILE`** (Required)
+  - AWS CLI profile name to use for S3 access
+  - Example: `export DPF_AWS_PROFILE=my-photo-frame-profile`
+
+- **`DPF_S3_BUCKET`** (Required)
+  - S3 bucket name containing photos
+  - Example: `export DPF_S3_BUCKET=my-photo-bucket`
+
+- **`DPF_S3_OUTPUT_PATH`** (Optional)
+  - Override output path for S3 downloads (defaults to `${ROOT_PATH_DPF}/original/surprise` if `ROOT_PATH_DPF` is set)
+  - Example: `export DPF_S3_OUTPUT_PATH=/custom/path`
+
+- **`DPF_WEBSERVER_URL`** (Optional)
+  - Web server URL for photo client (defaults to `http://localhost:8080`)
+  - Example: `export DPF_WEBSERVER_URL=http://192.168.1.100:8080`
+
+### Go Requirements
+
+- Go 1.24.5 or later
+- Dependencies will be automatically downloaded via `go mod tidy`
+
+## Running the Application
+
+1. Set environment variables:
+   ```bash
+   export ROOT_PATH_DPF=/path/to/photos
+   export DPF_AWS_PROFILE=your-profile-name
+   export DPF_S3_BUCKET=your-bucket-name
+   ```
+
+2. Install Go dependencies:
+   ```bash
+   go mod tidy
+   ```
+
+3. Build and run:
+   ```bash
+   go run .
+   ```
+
+   Or build the binary:
+   ```bash
+   go build -o digitalphotoframe .
+   ./digitalphotoframe
+   ```
+
+4. Access the web UI:
+   - Open `http://localhost:8080` in your browser
+   - Or from another device on your network: `http://<your-ip>:8080`

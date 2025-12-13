@@ -32,7 +32,7 @@ func main() {
 
 	// Initialize and start web server
 	webServer := NewWebServer(database, rootPath)
-	go webServer.Start(":8080")
+	go webServer.Start("0.0.0.0:8080")
 
 	// Initialize remote manager
 	remoteManager, err := NewRemoteManager()
