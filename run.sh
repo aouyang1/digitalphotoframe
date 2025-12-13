@@ -26,4 +26,8 @@ mv ${ROOT_PATH_DPF}/original/*_IMGP\.* ${ROOT_PATH_DPF}/photos/
 mv ${ROOT_PATH_DPF}/original/surprise/*_IMGP\.* ${ROOT_PATH_DPF}/photos/surprise/
 
 # start imv
-#/usr/bin/imv-wayland -f -s full -t 15 -r ${ROOT_PATH_DPF}/photos
+app=$(pgrep imv-wayland)
+if [ -n "${app}" ]; then
+  pkill imv-wayland
+fi
+/usr/bin/imv-wayland -f -s full -t 15 -r ${ROOT_PATH_DPF}/photos
