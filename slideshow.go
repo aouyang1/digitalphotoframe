@@ -3,10 +3,15 @@ package main
 import (
 	"errors"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -44,7 +49,13 @@ func clearImgpArtifacts(rootPath string) error {
 	return nil
 }
 
-func rotateImages(rootPath string) error {
+type rotateOptions struct {
+	name    string
+	degrees int
+	scale   int
+}
+
+func rotateImages(rootPath string, targetMaxDim int) error {
 	dirs := []string{
 		filepath.Join(rootPath, "original"),
 		filepath.Join(rootPath, "original/surprise"),
@@ -58,8 +69,8 @@ func rotateImages(rootPath string) error {
 			continue
 		}
 
-		// Collect image files (excluding already rotated ones)
-		var imageFiles []string
+		// Collect image files (excluding already rotated ones) and build rotate options
+		var imageRotOptions []rotateOptions
 		for _, entry := range entries {
 			if entry.IsDir() {
 				continue
@@ -71,22 +82,60 @@ func rotateImages(rootPath string) error {
 			}
 			ext := filepath.Ext(name)
 			if supportedExt.Contains(ext) {
-				imageFiles = append(imageFiles, filepath.Join(dir, name))
+				imageFilePath := filepath.Join(dir, name)
+				imageFile, err := os.Open(imageFilePath)
+				if err != nil {
+					slog.Warn("unable to read image for resolution", "name", imageFilePath, "error", err)
+					continue
+				}
+				var imageCfg image.Config
+				switch strings.ToLower(ext) {
+				case ".jpg", ".jpeg":
+					imageCfg, err = jpeg.DecodeConfig(imageFile)
+				case ".png":
+					imageCfg, err = png.DecodeConfig(imageFile)
+				default:
+					slog.Warn("unknown file extension to get resolution details", "ext", ext, "name", imageFilePath)
+				}
+				if err != nil {
+					slog.Warn("unable to read image config", "name", imageFilePath, "error", err)
+				}
+				downScale := 100
+				downScale = min(downScale, int(float64(targetMaxDim)/float64(imageCfg.Height)*100))
+				downScale = min(downScale, int(float64(targetMaxDim)/float64(imageCfg.Width)*100))
+
+				rOpt := rotateOptions{
+					name:    imageFilePath,
+					degrees: 90,
+					scale:   downScale,
+				}
+				imageRotOptions = append(imageRotOptions, rOpt)
 			}
 		}
 
-		if len(imageFiles) == 0 {
+		if len(imageRotOptions) == 0 {
 			continue
 		}
 
-		// Run imgp -o 90 on all image files in directory
-		args := append([]string{"-o", "90"}, imageFiles...)
-		cmd := exec.Command("imgp", args...)
-		if err := cmd.Run(); err != nil {
-			slog.Warn("failed to rotate images", "dir", dir, "error", err)
-			// Continue with other directories even if one fails
-		} else {
-			slog.Info("rotated images", "dir", dir, "count", len(imageFiles))
+		// downsize and then rotate
+		for rOpt := range slices.Values(imageRotOptions) {
+			args := append([]string{"-x", strconv.Itoa(rOpt.scale) + "%"}, rOpt.name)
+			cmd := exec.Command("imgp", args...)
+			if err := cmd.Run(); err != nil {
+				slog.Warn("failed to downsize image", "name", rOpt.name, "error", err)
+				continue
+			}
+
+			ext := filepath.Ext(rOpt.name)
+			baseName := filepath.Base(rOpt.name)
+			baseName = strings.TrimSuffix(baseName, ext)
+			imgpName := filepath.Join(filepath.Dir(rOpt.name), baseName+"_IMGP"+ext)
+
+			args = append([]string{"-o", strconv.Itoa(rOpt.degrees), "-w", "-i"}, imgpName)
+			cmd = exec.Command("imgp", args...)
+			if err := cmd.Run(); err != nil {
+				slog.Warn("failed to rotate image", "name", imgpName, "error", err)
+			}
 		}
 	}
 
@@ -168,10 +217,18 @@ func startImvWayland(rootPath string) error {
 	return nil
 }
 
+const defaultTargetMaxDim = 1080
+
 func restartSlideshow() error {
 	rootPath := os.Getenv("DPF_ROOT_PATH")
 	if rootPath == "" {
 		return errors.New("DPF_ROOT_PATH environment variable is required")
+	}
+	targetMaxDimStr := os.Getenv("DPF_TARGET_MAX_DIM")
+	targetMaxDim, err := strconv.Atoi(targetMaxDimStr)
+	if err != nil {
+		slog.Warn("unable to parse DPF_TARGET_MAX_DIM, using default", "DPF_TARGET_MAX_DIM", targetMaxDimStr, "default", defaultTargetMaxDim)
+		targetMaxDim = defaultTargetMaxDim
 	}
 
 	// Clear old imgp artifacts
@@ -180,7 +237,7 @@ func restartSlideshow() error {
 	}
 
 	// Rotate images
-	if err := rotateImages(rootPath); err != nil {
+	if err := rotateImages(rootPath, targetMaxDim); err != nil {
 		return fmt.Errorf("error rotating images, %w", err)
 	}
 
