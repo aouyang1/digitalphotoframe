@@ -58,6 +58,13 @@ func main() {
 	var mu sync.Mutex
 	for {
 		select {
+		case <-webServer.Updated:
+			slog.Info("found new updates from web upload, restarting slideshow")
+			mu.Lock()
+			if err := restartSlideshow(); err != nil {
+				slog.Error("error while restarting slideshow from web upload", "error", err)
+			}
+			mu.Unlock()
 		case <-remoteManager.Updated:
 			slog.Info("found new updates to remote, restarting slideshow")
 			mu.Lock()

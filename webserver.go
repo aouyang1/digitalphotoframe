@@ -16,6 +16,8 @@ type WebServer struct {
 	router   *gin.Engine
 	db       *Database
 	rootPath string
+
+	Updated chan bool
 }
 
 type UploadResponse struct {
@@ -59,6 +61,7 @@ func NewWebServer(db *Database, rootPath string) *WebServer {
 		router:   router,
 		db:       db,
 		rootPath: rootPath,
+		Updated:  make(chan bool),
 	}
 
 	// Setup routes
@@ -210,6 +213,9 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 		}
 
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+
+		// trigger slideshow restart
+		ws.Updated <- true
 		return
 	}
 
@@ -219,6 +225,9 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 		Order:     maxOrder,
 		Message:   "Photo uploaded successfully",
 	})
+
+	// trigger slideshow restart
+	ws.Updated <- true
 }
 
 func (ws *WebServer) handleRegisterPhoto(c *gin.Context) {
