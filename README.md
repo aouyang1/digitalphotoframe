@@ -88,9 +88,9 @@ sudo apt-get install imv-wayland imgp
 
 Set the following environment variables before running the application:
 
-- **`ROOT_PATH_DPF`** (Required)
+- **`DPF_ROOT_PATH`** (Required)
   - Root directory path for storing photos and database
-  - Example: `export ROOT_PATH_DPF=/home/user/photos`
+  - Example: `export DPF_ROOT_PATH=/home/user/photos`
 
 - **`DPF_AWS_PROFILE`** (Required)
   - AWS CLI profile name to use for S3 access

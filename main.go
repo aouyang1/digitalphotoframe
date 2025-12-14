@@ -16,10 +16,10 @@ var supportedExt = mapset.NewSet(
 )
 
 func main() {
-	// Get ROOT_PATH_DPF from environment
-	rootPath := os.Getenv("ROOT_PATH_DPF")
+	// Get DPF_ROOT_PATH from environment
+	rootPath := os.Getenv("DPF_ROOT_PATH")
 	if rootPath == "" {
-		log.Fatal("ROOT_PATH_DPF environment variable is required")
+		log.Fatal("DPF_ROOT_PATH environment variable is required")
 	}
 
 	// Initialize database
@@ -33,6 +33,11 @@ func main() {
 	// Initialize and start web server
 	webServer := NewWebServer(database, rootPath)
 	go webServer.Start("0.0.0.0:8080")
+
+	// Start slideshow
+	if err := restartSlideshow(); err != nil {
+		slog.Error("error while starting slideshow on initialization", "error", err)
+	}
 
 	// Initialize remote manager
 	remoteManager, err := NewRemoteManager()
@@ -56,12 +61,16 @@ func main() {
 		case <-remoteManager.Updated:
 			slog.Info("found new updates to remote, restarting slideshow")
 			mu.Lock()
-			restartSlideshow()
+			if err := restartSlideshow(); err != nil {
+				slog.Error("error while restarting slideshow from remote photo update", "error", err)
+			}
 			mu.Unlock()
 		case <-localManager.Updated:
 			slog.Info("found new updates to local, restarting slideshow")
 			mu.Lock()
-			restartSlideshow()
+			if err := restartSlideshow(); err != nil {
+				slog.Error("error while restarting slideshow from local photo update", "error", err)
+			}
 			mu.Unlock()
 		}
 	}

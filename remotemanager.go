@@ -35,7 +35,7 @@ type RemoteManager struct {
 
 func NewRemoteManager() (*RemoteManager, error) {
 	// if empty then defaults to current directory
-	rootPath := os.Getenv("ROOT_PATH_DPF")
+	rootPath := os.Getenv("DPF_ROOT_PATH")
 	if rootPath == "" {
 		rootPath = "."
 	}

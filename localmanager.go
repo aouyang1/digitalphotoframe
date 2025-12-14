@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	localCheckInterval = 5 * time.Second
+	localCheckInterval = 1 * time.Hour
 	localPhotoLimit    = 5
 )
 
@@ -25,8 +25,8 @@ type LocalManager struct {
 }
 
 func NewLocalManager() (*LocalManager, error) {
-	// Use ROOT_PATH_DPF/original if set
-	rootPath := os.Getenv("ROOT_PATH_DPF")
+	// Use DPF_ROOT_PATH/original if set
+	rootPath := os.Getenv("DPF_ROOT_PATH")
 	var path string
 	if rootPath != "" {
 		path = filepath.Join(rootPath, "original")
@@ -41,12 +41,22 @@ func NewLocalManager() (*LocalManager, error) {
 	}
 	photoClient := NewPhotoClient(webServerURL)
 
-	return &LocalManager{
+	l := &LocalManager{
 		path:         path,
 		photoClient:  photoClient,
 		trackedFiles: mapset.NewSet[string](),
 		Updated:      make(chan bool),
-	}, nil
+	}
+
+	currentFiles, _, err := l.getCurrentFiles()
+	if err != nil {
+		slog.Warn("error reading local directory on initialization", "path", l.path, "error", err)
+		return nil, err
+	}
+
+	l.trackedFiles = currentFiles
+
+	return l, nil
 }
 
 type fileInfo struct {
