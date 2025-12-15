@@ -4,12 +4,14 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -573,6 +575,41 @@ func (ws *WebServer) handleUpdateSettings(c *gin.Context) {
 		return
 	}
 
+	// After updating settings, restart the slideshow with the new configuration.
+	var imgPhotos []Photo
+	if newSettings.IncludeSurprise {
+		allPhotos, err := ws.getAllImages()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to get photos for restart: %v", err)})
+			return
+		}
+		imgPhotos = allPhotos
+	} else {
+		photos, err := ws.db.GetAllPhotos(1)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to get photos for restart: %v", err)})
+			return
+		}
+		imgPhotos = photos
+	}
+
+	imgPaths := make([]string, len(imgPhotos))
+	for i, p := range imgPhotos {
+		imgPaths[i] = ws.buildImgPathFromPhoto(p)
+	}
+
+	if newSettings.ShuffleEnabled && len(imgPaths) > 1 {
+		rand.Seed(time.Now().UnixNano())
+		rand.Shuffle(len(imgPaths), func(i, j int) {
+			imgPaths[i], imgPaths[j] = imgPaths[j], imgPaths[i]
+		})
+	}
+
+	if err := restartSlideshow(imgPaths, newSettings.SlideshowIntervalSeconds); err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to restart slideshow: %v", err)})
+		return
+	}
+
 	resp := SettingsResponse{
 		SlideshowIntervalSeconds: newSettings.SlideshowIntervalSeconds,
 		IncludeSurprise:          newSettings.IncludeSurprise,
@@ -766,10 +803,10 @@ func (ws *WebServer) handleUIPhotos(c *gin.Context) {
 			html += fmt.Sprintf(
 				"    <button class=\"photo-delete-btn\" "+
 					"title=\"Delete photo\" "+
-					"onclick=\"event.stopPropagation(); if(!confirm('Delete this photo?')) { return false; }\" "+
 					"hx-delete=\"%s\" "+
 					"hx-target=\"this\" "+
 					"hx-swap=\"none\" "+
+					"hx-confirm=\"Delete this photo?\" "+
 					"hx-on::after-request=\"if(event.detail.xhr.status===200){ htmx.trigger(document.body, 'refreshPhotos') }\">"+
 					"<i class=\"fa-solid fa-trash-can\"></i>"+
 					"</button>\n",
@@ -1065,6 +1102,135 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
         .photo-modal-close:hover {
             color: #ccc;
         }
+
+        /* Settings layout */
+        #settings-form {
+            margin-top: 20px;
+            max-width: 480px;
+        }
+
+        .settings-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+            gap: 12px;
+        }
+
+        .settings-row label,
+        .settings-row span {
+            font-size: 14px;
+            color: #333;
+        }
+
+        .interval-input-group {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .interval-input-group input[type="number"] {
+            width: 80px;
+            padding: 6px 8px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            font-size: 14px;
+        }
+
+        .interval-input-group select {
+            padding: 6px 8px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            font-size: 14px;
+            background-color: #fff;
+        }
+
+        .settings-help-text {
+            display: block;
+            font-size: 12px;
+            color: #666;
+            margin-top: 4px;
+        }
+
+        .toggle-button {
+            position: relative;
+            width: 52px;
+            height: 28px;
+            border-radius: 14px;
+            border: none;
+            cursor: pointer;
+            padding: 0;
+            background-color: #e0e0e0;
+            transition: background-color 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .toggle-button::before {
+            content: "";
+            position: absolute;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background-color: #fff;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+            left: 3px;
+            transition: transform 0.2s ease;
+        }
+
+        .toggle-button.toggle-on {
+            background-color: #007AFF;
+        }
+
+        .toggle-button.toggle-on::before {
+            transform: translateX(22px);
+        }
+
+        .toggle-button.toggle-off {
+            background-color: #e0e0e0;
+        }
+
+        .toggle-label-on,
+        .toggle-label-off {
+            pointer-events: none;
+            font-size: 11px;
+            color: #fff;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+        }
+
+        .toggle-button.toggle-on .toggle-label-on {
+            opacity: 1;
+        }
+
+        .toggle-button.toggle-off .toggle-label-off {
+            opacity: 1;
+        }
+
+        .settings-actions {
+            margin-top: 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .settings-save-btn {
+            background-color: #007AFF;
+            color: white;
+            border: none;
+            padding: 8px 18px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+
+        .settings-save-btn:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -1135,7 +1301,41 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
             <div id="view-settings" class="view">
                 <div class="category-section">
                     <h2 class="category-title">Settings</h2>
-                    <p class="upload-status">Settings will appear here.</p>
+                    <div id="settings-form">
+                        <div class="settings-row">
+                            <label for="interval-value">Slideshow Interval</label>
+                            <div class="interval-input-group">
+                                <input type="number" id="interval-value" min="1" step="1" value="15">
+                                <select id="interval-unit">
+                                    <option value="seconds">Seconds</option>
+                                    <option value="minutes">Minutes</option>
+                                    <option value="hours">Hours</option>
+                                </select>
+                            </div>
+                            <small class="settings-help-text">Minimum 1 second. You can specify the interval in seconds, minutes, or hours.</small>
+                        </div>
+
+                        <div class="settings-row">
+                            <span>Include Surprise Photos</span>
+                            <button type="button" id="toggle-include-surprise" class="toggle-button toggle-on" data-value="true" onclick="toggleSettingButton(this)">
+                                <span class="toggle-label-on"></span>
+                                <span class="toggle-label-off"></span>
+                            </button>
+                        </div>
+
+                        <div class="settings-row">
+                            <span>Shuffle Order</span>
+                            <button type="button" id="toggle-shuffle" class="toggle-button toggle-off" data-value="false" onclick="toggleSettingButton(this)">
+                                <span class="toggle-label-on"></span>
+                                <span class="toggle-label-off"></span>
+                            </button>
+                        </div>
+
+                        <div class="settings-actions">
+                            <button type="button" id="settings-save-btn" class="settings-save-btn" disabled onclick="saveSettings()">Save</button>
+                            <span id="settings-status" class="upload-status" style="display:none;"></span>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1221,6 +1421,218 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
                 alert('Failed to start slideshow');
             });
         }
+
+        // Settings state
+        let originalSettings = null;
+        let currentSettings = null;
+
+        function loadSettings() {
+            fetch('/settings')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Failed to load settings');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    originalSettings = {
+                        slideshow_interval_seconds: data.slideshow_interval_seconds,
+                        include_surprise: data.include_surprise,
+                        shuffle_enabled: data.shuffle_enabled
+                    };
+                    currentSettings = { ...originalSettings };
+                    applySettingsToUI(currentSettings);
+                    updateSettingsSaveButton();
+                })
+                .catch(err => {
+                    console.error(err);
+                    const statusEl = document.getElementById('settings-status');
+                    if (statusEl) {
+                        statusEl.textContent = 'Failed to load settings';
+                        statusEl.classList.remove('success');
+                        statusEl.classList.add('error');
+                        statusEl.style.display = 'inline';
+                    }
+                });
+        }
+
+        function applySettingsToUI(settings) {
+            const intervalInput = document.getElementById('interval-value');
+            const intervalUnit = document.getElementById('interval-unit');
+            const includeBtn = document.getElementById('toggle-include-surprise');
+            const shuffleBtn = document.getElementById('toggle-shuffle');
+
+            if (!intervalInput || !intervalUnit || !includeBtn || !shuffleBtn) {
+                return;
+            }
+
+            const totalSeconds = settings.slideshow_interval_seconds || 15;
+            let value = totalSeconds;
+            let unit = 'seconds';
+
+            if (totalSeconds % 3600 === 0) {
+                unit = 'hours';
+                value = totalSeconds / 3600;
+            } else if (totalSeconds % 60 === 0) {
+                unit = 'minutes';
+                value = totalSeconds / 60;
+            }
+
+            intervalInput.value = value;
+            intervalUnit.value = unit;
+
+            setToggleButton(includeBtn, settings.include_surprise);
+            setToggleButton(shuffleBtn, settings.shuffle_enabled);
+        }
+
+        function setToggleButton(btn, isOn) {
+            if (!btn) return;
+            btn.dataset.value = isOn ? 'true' : 'false';
+            if (isOn) {
+                btn.classList.add('toggle-on');
+                btn.classList.remove('toggle-off');
+            } else {
+                btn.classList.add('toggle-off');
+                btn.classList.remove('toggle-on');
+            }
+        }
+
+        function toggleSettingButton(btn) {
+            const current = btn.dataset.value === 'true';
+            const next = !current;
+            setToggleButton(btn, next);
+
+            if (!currentSettings) {
+                currentSettings = { ...originalSettings };
+            }
+
+            if (btn.id === 'toggle-include-surprise') {
+                currentSettings.include_surprise = next;
+            } else if (btn.id === 'toggle-shuffle') {
+                currentSettings.shuffle_enabled = next;
+            }
+
+            updateSettingsSaveButton();
+        }
+
+        function onIntervalChanged() {
+            const intervalInput = document.getElementById('interval-value');
+            const intervalUnit = document.getElementById('interval-unit');
+            if (!intervalInput || !intervalUnit) return;
+
+            let value = parseInt(intervalInput.value, 10);
+            if (Number.isNaN(value) || value < 1) {
+                value = 1;
+                intervalInput.value = value;
+            }
+
+            const unit = intervalUnit.value;
+            let seconds = value;
+            if (unit === 'minutes') {
+                seconds = value * 60;
+            } else if (unit === 'hours') {
+                seconds = value * 3600;
+            }
+
+            if (!currentSettings) {
+                currentSettings = { ...originalSettings };
+            }
+            currentSettings.slideshow_interval_seconds = seconds;
+            updateSettingsSaveButton();
+        }
+
+        function updateSettingsSaveButton() {
+            const saveBtn = document.getElementById('settings-save-btn');
+            if (!saveBtn) return;
+
+            if (!originalSettings || !currentSettings) {
+                saveBtn.disabled = true;
+                return;
+            }
+
+            const changed = JSON.stringify(originalSettings) !== JSON.stringify(currentSettings);
+            saveBtn.disabled = !changed;
+        }
+
+        function saveSettings() {
+            if (!currentSettings) return;
+
+            const statusEl = document.getElementById('settings-status');
+            if (statusEl) {
+                statusEl.textContent = 'Saving...';
+                statusEl.classList.remove('error', 'success');
+                statusEl.style.display = 'inline';
+            }
+
+            const payload = {
+                slideshow_interval_seconds: currentSettings.slideshow_interval_seconds,
+                include_surprise: !!currentSettings.include_surprise,
+                shuffle_enabled: !!currentSettings.shuffle_enabled
+            };
+
+            if (payload.slideshow_interval_seconds < 1) {
+                payload.slideshow_interval_seconds = 1;
+            }
+
+            fetch('/settings', {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            })
+                .then(response => {
+                    if (!response.ok) {
+                        return response.json().then(data => {
+                            const msg = data && data.error ? data.error : 'Failed to save settings';
+                            throw new Error(msg);
+                        }).catch(() => {
+                            throw new Error('Failed to save settings');
+                        });
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    originalSettings = {
+                        slideshow_interval_seconds: data.slideshow_interval_seconds,
+                        include_surprise: data.include_surprise,
+                        shuffle_enabled: data.shuffle_enabled
+                    };
+                    currentSettings = { ...originalSettings };
+                    applySettingsToUI(currentSettings);
+                    updateSettingsSaveButton();
+
+                    if (statusEl) {
+                        statusEl.textContent = 'Saved';
+                        statusEl.classList.remove('error');
+                        statusEl.classList.add('success');
+                        statusEl.style.display = 'inline';
+                    }
+                })
+                .catch(err => {
+                    console.error(err);
+                    if (statusEl) {
+                        statusEl.textContent = err.message || 'Failed to save settings';
+                        statusEl.classList.remove('success');
+                        statusEl.classList.add('error');
+                        statusEl.style.display = 'inline';
+                    }
+                });
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const intervalInput = document.getElementById('interval-value');
+            const intervalUnit = document.getElementById('interval-unit');
+            if (intervalInput) {
+                intervalInput.addEventListener('change', onIntervalChanged);
+                intervalInput.addEventListener('input', onIntervalChanged);
+            }
+            if (intervalUnit) {
+                intervalUnit.addEventListener('change', onIntervalChanged);
+            }
+
+            loadSettings();
+        });
     </script>
 </body>
 </html>`
