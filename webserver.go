@@ -3,11 +3,13 @@ package main
 import (
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -41,6 +43,12 @@ type ReorderRequest struct {
 type RegisterPhotoRequest struct {
 	PhotoName string `json:"photo_name"`
 	Category  int    `json:"category"`
+}
+
+type PlayFromPhotoRequest struct {
+	PhotoName string `json:"photo_name"`
+	Category  int    `json:"category"`
+	Interval  int    `json:"interval"`
 }
 
 type RegisterPhotoResponse struct {
@@ -82,12 +90,57 @@ func (ws *WebServer) setupRoutes() {
 	ws.router.GET("/photos/:category/:name/image", ws.handlePhotoImage)
 	ws.router.DELETE("/photos/:name/category/:category", ws.handleDeletePhoto)
 	ws.router.PUT("/photos/:name/reorder", ws.handleReorderPhoto)
+	ws.router.POST("/slideshow/play", ws.handlePlayFromPhoto)
 }
 
 func (ws *WebServer) Start(port string) {
 	log.Printf("Starting web server on port %s", port)
 	if err := ws.router.Run(port); err != nil {
 		log.Fatalf("Failed to start web server: %v", err)
+	}
+}
+
+func (ws *WebServer) getAllImages() ([]Photo, error) {
+	allPhotos, err := ws.db.GetAllPhotos(0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all photos for surprise category: %v", err)
+	}
+	allPhotosOriginal, err := ws.db.GetAllPhotos(1)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all photos for original category: %v", err)
+	}
+	allPhotos = append(allPhotos, allPhotosOriginal...)
+
+	return allPhotos, nil
+}
+
+func (ws *WebServer) getImgPaths() ([]string, error) {
+	allPhotos, err := ws.getAllImages()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get all images: %v", err)
+	}
+	imgPaths := make([]string, len(allPhotos))
+	for i, photo := range allPhotos {
+		imgPaths[i] = ws.buildImgPathFromPhoto(photo)
+	}
+	slog.Info("image paths", "imgPaths", imgPaths)
+	return imgPaths, nil
+}
+
+// buildImgPathFromPhoto constructs the filesystem path to the rotated (_IMGP) image
+// corresponding to a Photo record, based on its category and the web server rootPath.
+func (ws *WebServer) buildImgPathFromPhoto(photo Photo) string {
+	baseName := strings.TrimSuffix(photo.PhotoName, filepath.Ext(photo.PhotoName))
+	rotatedName := baseName + "_IMGP" + filepath.Ext(photo.PhotoName)
+
+	switch photo.Category {
+	case 0:
+		return filepath.Join(ws.rootPath, "photos", "surprise", rotatedName)
+	case 1:
+		return filepath.Join(ws.rootPath, "photos", rotatedName)
+	default:
+		// Fallback: treat as original photos directory
+		return filepath.Join(ws.rootPath, "photos", rotatedName)
 	}
 }
 
@@ -406,6 +459,18 @@ func (ws *WebServer) handleReorderPhoto(c *gin.Context) {
 		return
 	}
 
+	category := c.Param("category")
+	if category == "" {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Category is required"})
+		return
+	}
+
+	categoryInt, err := strconv.Atoi(category)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid category parameter"})
+		return
+	}
+
 	// Parse request body
 	var req ReorderRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -419,14 +484,14 @@ func (ws *WebServer) handleReorderPhoto(c *gin.Context) {
 	}
 
 	// Get photo to determine category
-	photo, err := ws.db.GetPhoto(name)
+	photo, err := ws.db.GetPhoto(name, categoryInt)
 	if err != nil {
 		c.JSON(http.StatusNotFound, ErrorResponse{Error: fmt.Sprintf("Photo '%s' not found", name)})
 		return
 	}
 
 	// Get max order to validate new_order
-	maxOrder, err := ws.db.GetMaxOrder(photo.Category)
+	maxOrder, err := ws.db.GetMaxOrder(categoryInt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
 		return
@@ -440,19 +505,112 @@ func (ws *WebServer) handleReorderPhoto(c *gin.Context) {
 	}
 
 	// Update order
-	if err := ws.db.UpdatePhotoOrder(name, req.NewOrder, photo.Category); err != nil {
+	if err := ws.db.UpdatePhotoOrder(name, req.NewOrder, categoryInt); err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to update photo order: %v", err)})
 		return
 	}
 
 	// Get updated photo
-	updatedPhoto, err := ws.db.GetPhoto(name)
+	updatedPhoto, err := ws.db.GetPhoto(name, categoryInt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to retrieve updated photo: %v", err)})
 		return
 	}
 
 	c.JSON(http.StatusOK, updatedPhoto)
+}
+
+func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
+	var req PlayFromPhotoRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: fmt.Sprintf("Invalid request body: %v", err)})
+		return
+	}
+
+	if req.PhotoName == "" {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "photo_name is required"})
+		return
+	}
+
+	if req.Category != 0 && req.Category != 1 {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "category must be 0 (surprise) or 1 (original)"})
+		return
+	}
+
+	// Optional: validate extension similar to upload/register handlers
+	ext := filepath.Ext(req.PhotoName)
+	if ext == "" || !supportedExt.Contains(ext) {
+		c.JSON(http.StatusBadRequest, ErrorResponse{
+			Error: fmt.Sprintf("Unsupported or missing file extension: %s. Supported: .jpeg, .jpg, .png", ext),
+		})
+		return
+	}
+
+	// Ensure the photo exists in the database
+	exists, err := ws.db.PhotoExists(req.PhotoName, req.Category)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
+		return
+	}
+	if !exists {
+		c.JSON(http.StatusNotFound, ErrorResponse{
+			Error: fmt.Sprintf("Photo '%s' in category %d not found", req.PhotoName, req.Category),
+		})
+		return
+	}
+
+	// Fetch all photos in the required order: category 0 then category 1
+	allPhotos, err := ws.getAllImages()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to get image paths: %v", err)})
+		return
+	}
+	if len(allPhotos) == 0 {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "No photos available to start slideshow"})
+		return
+	}
+
+	imgPaths := make([]string, len(allPhotos))
+	startIdx := -1
+
+	for i, p := range allPhotos {
+		imgPaths[i] = ws.buildImgPathFromPhoto(p)
+		if p.PhotoName == req.PhotoName && p.Category == req.Category {
+			startIdx = i
+		}
+	}
+
+	if startIdx == -1 {
+		// Defensive: DB changed between existence check and fetch
+		c.JSON(http.StatusNotFound, ErrorResponse{
+			Error: fmt.Sprintf("Photo '%s' in category %d not found in current playlist", req.PhotoName, req.Category),
+		})
+		return
+	}
+
+	// Rotate the slice so the requested photo is first
+	var ordered []string
+	if startIdx == 0 {
+		ordered = imgPaths
+	} else {
+		ordered = append(imgPaths[startIdx:], imgPaths[:startIdx]...)
+	}
+
+	interval := req.Interval
+	// Let restartSlideshow handle defaulting when interval <= 0
+	if err := restartSlideshow(ordered, interval); err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{
+			Error: fmt.Sprintf("Failed to restart slideshow: %v", err),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":    "Slideshow restarted",
+		"photo_name": req.PhotoName,
+		"category":   req.Category,
+		"interval":   interval,
+	})
 }
 
 func (ws *WebServer) handlePhotoImage(c *gin.Context) {
@@ -515,12 +673,50 @@ func (ws *WebServer) handleUIPhotos(c *gin.Context) {
 	for _, photo := range photos {
 		encodedName := url.PathEscape(photo.PhotoName)
 		imageURL := fmt.Sprintf("/photos/%d/%s/image", photo.Category, encodedName)
+
+		// Start photo container
+		html += "  <div class=\"photo-item\">\n"
+
+		// Photo thumbnail
 		html += fmt.Sprintf(
-			"  <img src=\"%s\" alt=\"%s\" class=\"photo-thumbnail\" onclick=\"openPhotoModal('%s')\" />\n",
+			"    <img src=\"%s\" alt=\"%s\" class=\"photo-thumbnail\" onclick=\"openPhotoModal('%s')\" />\n",
 			imageURL,
 			photo.PhotoName,
 			imageURL,
 		)
+
+		// Play button for both categories
+		html += fmt.Sprintf(
+			"    <button class=\"photo-play-btn\" "+
+				"title=\"Play slideshow from this photo\" "+
+				"onclick=\"event.stopPropagation(); playFromPhoto(this)\" "+
+				"data-name=\"%s\" "+
+				"data-category=\"%d\">"+
+				"<i class=\"fa-solid fa-play\"></i>"+
+				"</button>\n",
+			encodedName,
+			photo.Category,
+		)
+
+		// Only render delete button for "My Photos" (category 1)
+		if category == 1 {
+			deleteURL := fmt.Sprintf("/photos/%s/category/%d", encodedName, photo.Category)
+			html += fmt.Sprintf(
+				"    <button class=\"photo-delete-btn\" "+
+					"title=\"Delete photo\" "+
+					"onclick=\"event.stopPropagation(); if(!confirm('Delete this photo?')) { return false; }\" "+
+					"hx-delete=\"%s\" "+
+					"hx-target=\"this\" "+
+					"hx-swap=\"none\" "+
+					"hx-on::after-request=\"if(event.detail.xhr.status===200){ htmx.trigger(document.body, 'refreshPhotos') }\">"+
+					"<i class=\"fa-solid fa-trash-can\"></i>"+
+					"</button>\n",
+				deleteURL,
+			)
+		}
+
+		// End photo container
+		html += "  </div>\n"
 	}
 	html += "</div>"
 
@@ -531,11 +727,12 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
 	html := `<!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Photo Gallery</title>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
-    <style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Photo Gallery</title>
+<script src="https://unpkg.com/htmx.org@1.9.10"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
         * {
             margin: 0;
             padding: 0;
@@ -647,6 +844,11 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
+
+        .photo-item {
+            position: relative;
+            display: inline-block;
+        }
         
         .photo-thumbnail {
             width: 200px;
@@ -658,6 +860,48 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
         }
         
         .photo-thumbnail:hover {
+            transform: scale(1.05);
+        }
+
+        .photo-play-btn {
+            position: absolute;
+            bottom: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: transparent;
+            color: #fff;
+            border: none;
+            border-radius: 50%;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 18px;
+            text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+        }
+
+        .photo-delete-btn {
+            position: absolute;
+            bottom: 8px;
+            right: 8px;
+            background-color: transparent;
+            color: #fff;
+            border: none;
+            border-radius: 50%;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 18px;
+            text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+            transition: transform 0.1s;
+        }
+
+        .photo-delete-btn:hover {
             transform: scale(1.05);
         }
         
@@ -776,6 +1020,39 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
                 closePhotoModal();
             }
         });
+
+        function playFromPhoto(button) {
+            const encodedName = button.dataset.name;
+            const category = parseInt(button.dataset.category, 10);
+            if (!encodedName || Number.isNaN(category)) {
+                console.error('Missing photo metadata for playFromPhoto');
+                return;
+            }
+            const photoName = decodeURIComponent(encodedName);
+
+            fetch('/slideshow/play', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    photo_name: photoName,
+                    category: category,
+                    interval: 0
+                })
+            }).then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => {
+                        const msg = data && data.error ? data.error : 'Failed to start slideshow';
+                        alert(msg);
+                    }).catch(() => {
+                        alert('Failed to start slideshow');
+                    });
+                }
+            }).catch(() => {
+                alert('Failed to start slideshow');
+            });
+        }
     </script>
 </body>
 </html>`

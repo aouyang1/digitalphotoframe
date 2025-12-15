@@ -177,10 +177,10 @@ func (d *Database) PhotoExists(name string, category int) (bool, error) {
 	return count > 0, nil
 }
 
-func (d *Database) GetPhoto(name string) (*Photo, error) {
-	query := `SELECT photo_name, category, "order" FROM photos WHERE photo_name = ?`
+func (d *Database) GetPhoto(name string, category int) (*Photo, error) {
+	query := `SELECT photo_name, category, "order" FROM photos WHERE photo_name = ? AND category = ?`
 	var p Photo
-	err := d.db.QueryRow(query, name).Scan(&p.PhotoName, &p.Category, &p.Order)
+	err := d.db.QueryRow(query, name, category).Scan(&p.PhotoName, &p.Category, &p.Order)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("photo not found: %s", name)
 	}
@@ -192,13 +192,9 @@ func (d *Database) GetPhoto(name string) (*Photo, error) {
 
 func (d *Database) UpdatePhotoOrder(name string, newOrder int, category int) error {
 	// Get current order of the photo
-	photo, err := d.GetPhoto(name)
+	photo, err := d.GetPhoto(name, category)
 	if err != nil {
 		return err
-	}
-
-	if photo.Category != category {
-		return fmt.Errorf("photo category mismatch")
 	}
 
 	oldOrder := photo.Order

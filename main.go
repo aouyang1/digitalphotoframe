@@ -35,14 +35,20 @@ func main() {
 	go webServer.Start("0.0.0.0:8080")
 
 	// Start slideshow
-	if err := restartSlideshow(); err != nil {
-		slog.Error("error while starting slideshow on initialization", "error", err)
+	imgPaths, err := webServer.getImgPaths()
+	if err != nil {
+		log.Fatalf("Failed to get image paths: %v", err)
+	}
+
+	interval := 15
+	if err := restartSlideshow(imgPaths, interval); err != nil {
+		slog.Error("Failed to start slideshow on initialization, continuing", "error", err)
 	}
 
 	// Initialize remote manager
 	remoteManager, err := NewRemoteManager()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to initialize remote manager: %v", err)
 	}
 
 	go remoteManager.Run()
@@ -50,7 +56,7 @@ func main() {
 	// Initialize local manager
 	localManager, err := NewLocalManager()
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Failed to initialize local manager: %v", err)
 	}
 
 	go localManager.Run()
@@ -59,24 +65,18 @@ func main() {
 	for {
 		select {
 		case <-webServer.Updated:
-			slog.Info("found new updates from web upload, restarting slideshow")
-			mu.Lock()
-			if err := restartSlideshow(); err != nil {
-				slog.Error("error while restarting slideshow from web upload", "error", err)
-			}
-			mu.Unlock()
 		case <-remoteManager.Updated:
-			slog.Info("found new updates to remote, restarting slideshow")
-			mu.Lock()
-			if err := restartSlideshow(); err != nil {
-				slog.Error("error while restarting slideshow from remote photo update", "error", err)
-			}
-			mu.Unlock()
 		case <-localManager.Updated:
-			slog.Info("found new updates to local, restarting slideshow")
+			slog.Info("found new updates, restarting slideshow")
 			mu.Lock()
-			if err := restartSlideshow(); err != nil {
-				slog.Error("error while restarting slideshow from local photo update", "error", err)
+			imgPaths, err := webServer.getImgPaths()
+			if err != nil {
+				slog.Error("error while getting image paths", "error", err)
+				mu.Unlock()
+				continue
+			}
+			if err := restartSlideshow(imgPaths, interval); err != nil {
+				slog.Error("error while restarting slideshow from web upload", "error", err)
 			}
 			mu.Unlock()
 		}

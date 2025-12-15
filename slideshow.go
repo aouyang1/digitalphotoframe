@@ -199,27 +199,45 @@ func killImvWayland() error {
 	return nil
 }
 
-func startImvWayland(rootPath string) error {
-	photosDir := filepath.Join(rootPath, "photos")
+const defaultInterval = 15
 
-	// Ensure photos directory exists
-	if err := os.MkdirAll(photosDir, 0755); err != nil {
-		return fmt.Errorf("failed to create photos directory: %w", err)
+func startImvWayland(rootPath string, imgPaths []string, interval int) error {
+	// Start imv-wayland in background
+	args := []string{"-f", "-s", "full"}
+
+	// set slideshow interval
+	if interval <= 0 {
+		interval = defaultInterval
+	}
+	args = append(args, "-t", strconv.Itoa(interval))
+
+	// set explicit order of images or use default ordering by directory
+	if len(imgPaths) > 0 {
+		args = append(args, imgPaths...)
+	} else {
+		slog.Info("no explicit order specified, using default directory ordering for imv")
+		photosDir := filepath.Join(rootPath, "photos")
+
+		// Ensure photos directory exists
+		if err := os.MkdirAll(photosDir, 0755); err != nil {
+			return fmt.Errorf("failed to create photos directory: %w", err)
+		}
+
+		args = append(args, "-r", photosDir)
 	}
 
-	// Start imv-wayland in background
-	cmd := exec.Command("/usr/bin/imv-wayland", "-f", "-s", "full", "-t", "15", "-r", photosDir)
+	cmd := exec.Command("/usr/bin/imv-wayland", args...)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start imv-wayland: %w", err)
 	}
 
-	slog.Info("started imv-wayland slideshow", "path", photosDir)
+	slog.Info("started imv-wayland slideshow")
 	return nil
 }
 
 const defaultTargetMaxDim = 1080
 
-func restartSlideshow() error {
+func restartSlideshow(imgPaths []string, interval int) error {
 	rootPath := os.Getenv("DPF_ROOT_PATH")
 	if rootPath == "" {
 		return errors.New("DPF_ROOT_PATH environment variable is required")
@@ -252,7 +270,7 @@ func restartSlideshow() error {
 	}
 
 	// Start new imv-wayland
-	if err := startImvWayland(rootPath); err != nil {
+	if err := startImvWayland(rootPath, imgPaths, interval); err != nil {
 		return fmt.Errorf("failed to restart slideshow: %w", err)
 	}
 
