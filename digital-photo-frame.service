@@ -1,0 +1,18 @@
+[Unit]
+Description=Digital Photo Frame Service
+After=After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Environment=DPF_AWS_PROFILE={YOUR_AWS_PROFILE}
+Environment=DPF_S3_BUCKET={YOUR_S3_BUCKET}
+Environment=DPF_ROOT_PATH={YOUR_ROOT_PATH}
+Environment=DPF_TARGET_MAX_DIM=1024
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/bin/dpf
+KillMode=process
+Restart=on-failure
+
+[Install]
+Alias=dpf.service
+WantedBy=default.target

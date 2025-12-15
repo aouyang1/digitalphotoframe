@@ -141,3 +141,21 @@ Set the following environment variables before running the application:
 4. Access the web UI:
    - Open `http://localhost:8080` in your browser
    - Or from another device on your network: `http://<your-ip>:8080`
+
+5. Setting up as systemd service
+   - create systemd directory for user if not already done
+   ```bash
+   mkdir -p ~/.config/systemd/user
+   cp digital-photo-frame.service ~/.config/systemd/user/
+   ```
+   - update the digital-photo-frame.service with your own setting
+   - enable and start the systemd service
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable digital-photo-frame.service
+   systemctl --user start digital-photo-frame.service
+   ```
+   - can try rebooting to ensure on restart the app load automatically. The desktop will still load but soon after the slideshow should start.
+   ```bash
+   sudo reboot
+   ```
