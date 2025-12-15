@@ -20,6 +20,12 @@ type Photo struct {
 	Order     int    `json:"order"`
 }
 
+type AppSettings struct {
+	SlideshowIntervalSeconds int  `json:"slideshow_interval_seconds"`
+	IncludeSurprise          bool `json:"include_surprise"`
+	ShuffleEnabled           bool `json:"shuffle_enabled"`
+}
+
 func NewDatabase(dbPath string) (*Database, error) {
 	// Create directory if it doesn't exist
 	dir := filepath.Dir(dbPath)
@@ -55,6 +61,13 @@ func (d *Database) createTable() error {
 		PRIMARY KEY (photo_name, category)
 	);
 	CREATE INDEX IF NOT EXISTS idx_photos_category_order ON photos(category, "order");
+	CREATE TABLE IF NOT EXISTS app_settings (
+		singleton INTEGER NOT NULL DEFAULT 1 CHECK (singleton = 1),
+		slideshow_interval_seconds INTEGER NOT NULL,
+		include_surprise           INTEGER NOT NULL,
+		shuffle_enabled            INTEGER NOT NULL,
+		PRIMARY KEY (singleton)
+	);
 	`
 	_, err := d.db.Exec(query)
 	return err
@@ -248,6 +261,76 @@ func (d *Database) UpdatePhotoOrder(name string, newOrder int, category int) err
 
 	slog.Info("photo order updated", "name", name, "old_order", oldOrder, "new_order", newOrder)
 	return nil
+}
+
+func (d *Database) GetAppSettings() (*AppSettings, error) {
+	const query = `
+		SELECT slideshow_interval_seconds,
+		       include_surprise,
+		       shuffle_enabled
+		FROM app_settings
+		WHERE singleton = 1
+	`
+
+	var interval int
+	var includeSurpriseInt, shuffleEnabledInt int
+
+	err := d.db.QueryRow(query).Scan(&interval, &includeSurpriseInt, &shuffleEnabledInt)
+	if err == sql.ErrNoRows {
+		// Bootstrap defaults if no settings row exists yet
+		defaults := &AppSettings{
+			SlideshowIntervalSeconds: 15,
+			IncludeSurprise:          true,
+			ShuffleEnabled:           false,
+		}
+		if err := d.UpsertAppSettings(defaults); err != nil {
+			return nil, err
+		}
+		return defaults, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get app settings: %w", err)
+	}
+
+	settings := &AppSettings{
+		SlideshowIntervalSeconds: interval,
+		IncludeSurprise:          includeSurpriseInt != 0,
+		ShuffleEnabled:           shuffleEnabledInt != 0,
+	}
+	return settings, nil
+}
+
+func (d *Database) UpsertAppSettings(s *AppSettings) error {
+	const stmt = `
+		INSERT INTO app_settings (
+			singleton,
+			slideshow_interval_seconds,
+			include_surprise,
+			shuffle_enabled
+		) VALUES (1, ?, ?, ?)
+		ON CONFLICT(singleton) DO UPDATE SET
+			slideshow_interval_seconds = excluded.slideshow_interval_seconds,
+			include_surprise           = excluded.include_surprise,
+			shuffle_enabled            = excluded.shuffle_enabled
+	`
+
+	_, err := d.db.Exec(
+		stmt,
+		s.SlideshowIntervalSeconds,
+		boolToInt(s.IncludeSurprise),
+		boolToInt(s.ShuffleEnabled),
+	)
+	if err != nil {
+		return fmt.Errorf("upsert app settings: %w", err)
+	}
+	return nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (d *Database) Close() error {

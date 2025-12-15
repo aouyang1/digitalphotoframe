@@ -1,6 +1,6 @@
 [Unit]
 Description=Digital Photo Frame Service
-After=After=graphical-session.target
+After=graphical-session.target
 Wants=graphical-session.target
 
 [Service]

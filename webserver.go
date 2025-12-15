@@ -51,6 +51,18 @@ type PlayFromPhotoRequest struct {
 	Interval  int    `json:"interval"`
 }
 
+type SettingsResponse struct {
+	SlideshowIntervalSeconds int  `json:"slideshow_interval_seconds"`
+	IncludeSurprise          bool `json:"include_surprise"`
+	ShuffleEnabled           bool `json:"shuffle_enabled"`
+}
+
+type UpdateSettingsRequest struct {
+	SlideshowIntervalSeconds int  `json:"slideshow_interval_seconds"`
+	IncludeSurprise          bool `json:"include_surprise"`
+	ShuffleEnabled           bool `json:"shuffle_enabled"`
+}
+
 type RegisterPhotoResponse struct {
 	PhotoName string `json:"photo_name"`
 	Category  int    `json:"category"`
@@ -91,6 +103,8 @@ func (ws *WebServer) setupRoutes() {
 	ws.router.DELETE("/photos/:name/category/:category", ws.handleDeletePhoto)
 	ws.router.PUT("/photos/:name/reorder", ws.handleReorderPhoto)
 	ws.router.POST("/slideshow/play", ws.handlePlayFromPhoto)
+	ws.router.GET("/settings", ws.handleGetSettings)
+	ws.router.PUT("/settings", ws.handleUpdateSettings)
 }
 
 func (ws *WebServer) Start(port string) {
@@ -520,6 +534,54 @@ func (ws *WebServer) handleReorderPhoto(c *gin.Context) {
 	c.JSON(http.StatusOK, updatedPhoto)
 }
 
+func (ws *WebServer) handleGetSettings(c *gin.Context) {
+	settings, err := ws.db.GetAppSettings()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to get settings: %v", err)})
+		return
+	}
+
+	resp := SettingsResponse{
+		SlideshowIntervalSeconds: settings.SlideshowIntervalSeconds,
+		IncludeSurprise:          settings.IncludeSurprise,
+		ShuffleEnabled:           settings.ShuffleEnabled,
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+func (ws *WebServer) handleUpdateSettings(c *gin.Context) {
+	var req UpdateSettingsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: fmt.Sprintf("Invalid request body: %v", err)})
+		return
+	}
+
+	if req.SlideshowIntervalSeconds <= 0 {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "slideshow_interval_seconds must be positive"})
+		return
+	}
+
+	newSettings := &AppSettings{
+		SlideshowIntervalSeconds: req.SlideshowIntervalSeconds,
+		IncludeSurprise:          req.IncludeSurprise,
+		ShuffleEnabled:           req.ShuffleEnabled,
+	}
+
+	if err := ws.db.UpsertAppSettings(newSettings); err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to update settings: %v", err)})
+		return
+	}
+
+	resp := SettingsResponse{
+		SlideshowIntervalSeconds: newSettings.SlideshowIntervalSeconds,
+		IncludeSurprise:          newSettings.IncludeSurprise,
+		ShuffleEnabled:           newSettings.ShuffleEnabled,
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
 func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 	var req PlayFromPhotoRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -748,6 +810,59 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
         .container {
             max-width: 1400px;
             margin: 0 auto;
+            display: flex;
+            min-height: calc(100vh - 40px);
+        }
+        
+        .sidebar {
+            width: 64px;
+            background-color: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 16px 0;
+            margin-right: 20px;
+            gap: 12px;
+        }
+        
+        .nav-item {
+            background: none;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            width: 100%;
+            padding: 10px 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+            transition: color 0.2s, background-color 0.2s;
+        }
+        
+        .nav-item:hover {
+            color: #333;
+            background-color: rgba(0,0,0,0.03);
+        }
+        
+        .nav-item.active {
+            color: #007AFF;
+            background-color: rgba(0,122,255,0.08);
+        }
+        
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .view {
+            display: none;
+        }
+        
+        .view.active-view {
+            display: block;
         }
         
         .category-section {
@@ -868,7 +983,7 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
             bottom: 8px;
             left: 50%;
             transform: translateX(-50%);
-            background-color: transparent;
+            background-color: rgba(0, 0, 0, 0.4);
             color: #fff;
             border: none;
             border-radius: 50%;
@@ -880,6 +995,7 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
             cursor: pointer;
             font-size: 18px;
             text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+			padding-left: 3px;
         }
 
         .photo-delete-btn {
@@ -953,43 +1069,74 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
 </head>
 <body>
     <div class="container">
-        <div class="category-section">
-            <h2 class="category-title">Surprise</h2>
-            <div id="surprise-photos" class="photo-row loading" 
-                 hx-get="/ui/photos/0" 
-                 hx-trigger="load" 
-                 hx-swap="innerHTML">
-                Loading...
+        <nav class="sidebar">
+            <button class="nav-item active" type="button" data-view="photos" onclick="switchView('photos', this)">
+                <i class="fa-solid fa-images"></i>
+            </button>
+            <button class="nav-item" type="button" data-view="slideshow" onclick="switchView('slideshow', this)">
+                <i class="fa-solid fa-play-circle"></i>
+            </button>
+            <button class="nav-item" type="button" data-view="settings" onclick="switchView('settings', this)">
+                <i class="fa-solid fa-gear"></i>
+            </button>
+        </nav>
+        <div class="main-content">
+            <div id="view-photos" class="view active-view">
+                <div class="category-section">
+                    <div class="category-header">
+                    	<h2 class="category-title">Surprise</h2>
+					</div>
+                    <div id="surprise-photos" class="photo-row loading" 
+                     hx-get="/ui/photos/0" 
+                     hx-trigger="load" 
+                     hx-swap="innerHTML">
+                     Loading...
+                    </div>
+                </div>
+                
+                <div class="category-section">
+                    <div class="category-header">
+                        <h2 class="category-title">My Photos</h2>
+                        <form class="upload-form" 
+                              hx-post="/upload" 
+                              hx-encoding="multipart/form-data"
+                              hx-target="#my-photos"
+                              hx-swap="innerHTML"
+                              hx-indicator="#upload-indicator"
+                              id="upload-form">
+                            <label for="file-input" class="file-input-label">Upload</label>
+                            <input type="file" 
+                                   id="file-input" 
+                                   name="file" 
+                                   class="file-input" 
+                                   accept=".jpg,.jpeg,.png,.JPG,.JPEG,.PNG"
+                                   required
+                                   onchange="document.getElementById('file-name').textContent=this.files[0]?this.files[0].name:''; htmx.trigger('#upload-form', 'submit');">
+                            <span id="file-name" class="file-name"></span>
+                            <span id="upload-indicator" class="upload-status" style="display: none;">Uploading...</span>
+                        </form>
+                    </div>
+                    <div id="my-photos" class="photo-row loading" 
+                         hx-get="/ui/photos/1" 
+                         hx-trigger="load, refreshPhotos from:body" 
+                         hx-swap="innerHTML">
+                        Loading...
+                    </div>
+                </div>
             </div>
-        </div>
-        
-        <div class="category-section">
-            <div class="category-header">
-                <h2 class="category-title">My Photos</h2>
-                <form class="upload-form" 
-                      hx-post="/upload" 
-                      hx-encoding="multipart/form-data"
-                      hx-target="#my-photos"
-                      hx-swap="innerHTML"
-                      hx-indicator="#upload-indicator"
-                      id="upload-form">
-                    <label for="file-input" class="file-input-label">Upload</label>
-                    <input type="file" 
-                           id="file-input" 
-                           name="file" 
-                           class="file-input" 
-                           accept=".jpg,.jpeg,.png,.JPG,.JPEG,.PNG"
-                           required
-                           onchange="document.getElementById('file-name').textContent=this.files[0]?this.files[0].name:''; htmx.trigger('#upload-form', 'submit');">
-                    <span id="file-name" class="file-name"></span>
-                    <span id="upload-indicator" class="upload-status" style="display: none;">Uploading...</span>
-                </form>
+
+            <div id="view-slideshow" class="view">
+                <div class="category-section">
+                    <h2 class="category-title">Slideshow</h2>
+                    <p class="upload-status">Slideshow controls coming soon.</p>
+                </div>
             </div>
-            <div id="my-photos" class="photo-row loading" 
-                 hx-get="/ui/photos/1" 
-                 hx-trigger="load, refreshPhotos from:body" 
-                 hx-swap="innerHTML">
-                Loading...
+
+            <div id="view-settings" class="view">
+                <div class="category-section">
+                    <h2 class="category-title">Settings</h2>
+                    <p class="upload-status">Settings will appear here.</p>
+                </div>
             </div>
         </div>
     </div>
@@ -1020,6 +1167,27 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
                 closePhotoModal();
             }
         });
+
+        function switchView(viewName, button) {
+            const views = document.querySelectorAll('.view');
+            views.forEach(function(view) {
+                view.classList.remove('active-view');
+            });
+
+            const target = document.getElementById('view-' + viewName);
+            if (target) {
+                target.classList.add('active-view');
+            }
+
+            const navItems = document.querySelectorAll('.nav-item');
+            navItems.forEach(function(item) {
+                item.classList.remove('active');
+            });
+
+            if (button) {
+                button.classList.add('active');
+            }
+        }
 
         function playFromPhoto(button) {
             const encodedName = button.dataset.name;
