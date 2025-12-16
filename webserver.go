@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -76,6 +78,10 @@ type ErrorResponse struct {
 	Error string `json:"error"`
 }
 
+type DisplayStateResponse struct {
+	Enabled bool `json:"enabled"`
+}
+
 func NewWebServer(db *Database, rootPath string) *WebServer {
 	router := gin.Default()
 
@@ -107,6 +113,8 @@ func (ws *WebServer) setupRoutes() {
 	ws.router.POST("/slideshow/play", ws.handlePlayFromPhoto)
 	ws.router.GET("/settings", ws.handleGetSettings)
 	ws.router.PUT("/settings", ws.handleUpdateSettings)
+	ws.router.GET("/display", ws.handleGetDisplay)
+	ws.router.PUT("/display/:state", ws.handleUpdateDisplay)
 }
 
 func (ws *WebServer) Start(port string) {
@@ -712,6 +720,104 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 	})
 }
 
+type Output struct {
+	Name         string       `json:"name"`
+	Description  string       `json:"description"`
+	Make         string       `json:"make"`
+	Model        string       `json:"model"`
+	Serial       string       `json:"serial"`
+	PhysicalSize PhysicalSize `json:"physical_size"`
+	Enabled      bool         `json:"enabled"`
+	Modes        []Mode       `json:"modes"`
+	Position     Position     `json:"position"`
+	Transform    string       `json:"transform"`
+	Scale        float64      `json:"scale"`
+	AdaptiveSync bool         `json:"adaptive_sync"`
+}
+
+type PhysicalSize struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+type Mode struct {
+	Width     int     `json:"width"`
+	Height    int     `json:"height"`
+	Refresh   float64 `json:"refresh"`
+	Preferred bool    `json:"preferred"`
+	Current   bool    `json:"current"`
+}
+
+type Position struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+}
+
+// getDisplayEnabled inspects the current state of the HDMI-A-1 output using wlr-randr.
+// It returns true if the output is enabled, false if disabled.
+func getDisplayEnabled() (bool, error) {
+	outputName := "HDMI-A-1"
+	cmd := exec.Command("wlr-randr", "--output", outputName, "--json")
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("failed to run wlr-randr: %w", err)
+	}
+
+	var results []Output
+	if err := json.Unmarshal(out, &results); err != nil {
+		return false, fmt.Errorf("failed to unmarshal wlr-randr output: %w", err)
+	}
+
+	for _, result := range results {
+		if result.Name == outputName {
+			return result.Enabled, nil
+		}
+	}
+
+	return false, fmt.Errorf("output %s not found", outputName)
+}
+
+func (ws *WebServer) handleGetDisplay(c *gin.Context) {
+	enabled, err := getDisplayEnabled()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to get display state: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, DisplayStateResponse{Enabled: enabled})
+}
+
+func (ws *WebServer) handleUpdateDisplay(c *gin.Context) {
+	state := c.Param("state")
+	if state != "0" && state != "1" {
+		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "state must be 0 (off) or 1 (on)"})
+		return
+	}
+
+	var arg string
+	desiredEnabled := state == "1"
+	if desiredEnabled {
+		arg = "--on"
+	} else {
+		arg = "--off"
+	}
+
+	cmd := exec.Command("wlr-randr", "--output", "HDMI-A-1", arg)
+	if err := cmd.Run(); err != nil {
+		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to update display state: %v", err)})
+		return
+	}
+
+	// Re-read state to reflect actual output if possible.
+	enabled, err := getDisplayEnabled()
+	if err != nil {
+		slog.Warn("failed to re-read display state after update", "error", err)
+		enabled = desiredEnabled
+	}
+
+	c.JSON(http.StatusOK, DisplayStateResponse{Enabled: enabled})
+}
+
 func (ws *WebServer) handlePhotoImage(c *gin.Context) {
 	categoryStr := c.Param("category")
 	encodedName := c.Param("name")
@@ -1294,7 +1400,18 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
             <div id="view-slideshow" class="view">
                 <div class="category-section">
                     <h2 class="category-title">Slideshow</h2>
-                    <p class="upload-status">Slideshow controls coming soon.</p>
+                    <div class="settings-row" style="margin-top: 16px; justify-content: flex-start; gap: 12px;">
+                        <span>Display On</span>
+                        <button
+                            type="button"
+                            id="toggle-display"
+                            class="toggle-button toggle-off"
+                            data-value="true"
+                            onclick="toggleDisplay(this)">
+                            <span class="toggle-label-on"></span>
+                            <span class="toggle-label-off"></span>
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -1425,6 +1542,9 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
         // Settings state
         let originalSettings = null;
         let currentSettings = null;
+
+        // Display state for slideshow view
+        let currentDisplayEnabled = null;
 
         function loadSettings() {
             fetch('/settings')
@@ -1620,6 +1740,72 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
                 });
         }
 
+        function applyDisplayToUI(enabled) {
+            const btn = document.getElementById('toggle-display');
+            if (!btn) return;
+            setToggleButton(btn, !!enabled);
+            currentDisplayEnabled = !!enabled;
+        }
+
+        function loadDisplayState() {
+            fetch('/display')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Failed to load display state');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    applyDisplayToUI(data.enabled);
+                })
+                .catch(err => {
+                    console.error(err);
+                });
+        }
+
+        function toggleDisplay(btn) {
+            if (currentDisplayEnabled === null) {
+                // State not yet loaded; attempt to load then exit.
+                loadDisplayState();
+                return;
+            }
+
+            const previous = currentDisplayEnabled;
+            const next = !previous;
+            setToggleButton(btn, next);
+            currentDisplayEnabled = next;
+            btn.disabled = true;
+
+            const desired = next ? 1 : 0;
+
+            fetch('/display/' + desired, {
+                method: 'PUT'
+            })
+                .then(response => {
+                    if (!response.ok) {
+                        return response.json().then(data => {
+                            const msg = data && data.error ? data.error : 'Failed to update display';
+                            throw new Error(msg);
+                        }).catch(() => {
+                            throw new Error('Failed to update display');
+                        });
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    applyDisplayToUI(data.enabled);
+                })
+                .catch(err => {
+                    console.error(err);
+                    alert(err.message || 'Failed to update display');
+                    // Revert UI to previous state
+                    applyDisplayToUI(previous);
+                })
+                .finally(() => {
+                    btn.disabled = false;
+                });
+        }
+
         document.addEventListener('DOMContentLoaded', function() {
             const intervalInput = document.getElementById('interval-value');
             const intervalUnit = document.getElementById('interval-unit');
@@ -1632,6 +1818,7 @@ func (ws *WebServer) handleMainUI(c *gin.Context) {
             }
 
             loadSettings();
+            loadDisplayState();
         });
     </script>
 </body>
