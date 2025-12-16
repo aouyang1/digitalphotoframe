@@ -105,8 +105,8 @@ Set the following environment variables before running the application:
   - Example: `export DPF_S3_OUTPUT_PATH=/custom/path`
 
 - **`DPF_WEBSERVER_URL`** (Optional)
-  - Web server URL for photo client (defaults to `http://localhost:8080`)
-  - Example: `export DPF_WEBSERVER_URL=http://192.168.1.100:8080`
+  - Web server URL for photo client (defaults to `http://localhost`)
+  - Example: `export DPF_WEBSERVER_URL=http://192.168.1.100`
 
 ### Go Requirements
 
@@ -134,15 +134,25 @@ Set the following environment variables before running the application:
 
    Or build the binary:
    ```bash
-   go build -o digitalphotoframe .
-   ./digitalphotoframe
+   go build -o dpf .
+   ./dpf
    ```
 
-4. Access the web UI:
-   - Open `http://localhost:8080` in your browser
-   - Or from another device on your network: `http://<your-ip>:8080`
+4. Access the web UI on local machine:
+   - Open `http://localhost` in your browser
+   - Or from another device on your network: `http://<your-ip>`
 
-5. Setting up as systemd service
+5. Build and upload to pi
+   ```bash
+   make build && scp dpf {USER}@{PI-HOSTNAME}:/home/{USER}/dpf
+   ```
+   On the pi
+   ```bash
+   sudo mv dpf /usr/bin/ && sudo setcap 'cap_net_bind_service=+ep' /usr/bin/dpf
+   ```
+   setcap is needed as we are publishing the webapp on port 80 on the pi
+   
+6. Setting up as systemd service
    - create systemd directory for user if not already done
    ```bash
    mkdir -p ~/.config/systemd/user

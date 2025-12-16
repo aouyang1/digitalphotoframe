@@ -1,85 +1,39 @@
 package main
 
 import (
-	"encoding/json"
+	"embed"
 	"fmt"
+	"io/fs"
 	"log"
 	"log/slog"
 	"math/rand"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
+	"sync"
 
+	"github.com/aouyang1/digitalphotoframe/wlrrandr"
 	"github.com/gin-gonic/gin"
 )
+
+//go:embed web/templates/* web/static/**
+var webFiles embed.FS
 
 type WebServer struct {
 	router   *gin.Engine
 	db       *Database
 	rootPath string
 
+	localManager  *LocalManager
+	remoteManager *RemoteManager
+
 	Updated chan bool
-}
 
-type UploadResponse struct {
-	PhotoName string `json:"photo_name"`
-	Category  int    `json:"category"`
-	Order     int    `json:"order"`
-	Message   string `json:"message"`
-}
-
-type PhotoListResponse struct {
-	Photos []Photo `json:"photos"`
-	Total  int     `json:"total"`
-	Page   int     `json:"page"`
-	Limit  int     `json:"limit"`
-}
-
-type ReorderRequest struct {
-	NewOrder int `json:"new_order"`
-}
-
-type RegisterPhotoRequest struct {
-	PhotoName string `json:"photo_name"`
-	Category  int    `json:"category"`
-}
-
-type PlayFromPhotoRequest struct {
-	PhotoName string `json:"photo_name"`
-	Category  int    `json:"category"`
-	Interval  int    `json:"interval"`
-}
-
-type SettingsResponse struct {
-	SlideshowIntervalSeconds int  `json:"slideshow_interval_seconds"`
-	IncludeSurprise          bool `json:"include_surprise"`
-	ShuffleEnabled           bool `json:"shuffle_enabled"`
-}
-
-type UpdateSettingsRequest struct {
-	SlideshowIntervalSeconds int  `json:"slideshow_interval_seconds"`
-	IncludeSurprise          bool `json:"include_surprise"`
-	ShuffleEnabled           bool `json:"shuffle_enabled"`
-}
-
-type RegisterPhotoResponse struct {
-	PhotoName string `json:"photo_name"`
-	Category  int    `json:"category"`
-	Order     int    `json:"order"`
-	Message   string `json:"message"`
-}
-
-type ErrorResponse struct {
-	Error string `json:"error"`
-}
-
-type DisplayStateResponse struct {
-	Enabled bool `json:"enabled"`
+	// this ensures only one go routine can restart the slideshow at a time
+	imvMutex sync.Mutex
 }
 
 func NewWebServer(db *Database, rootPath string) *WebServer {
@@ -92,6 +46,17 @@ func NewWebServer(db *Database, rootPath string) *WebServer {
 		Updated:  make(chan bool),
 	}
 
+	localManager, err := NewLocalManager()
+	if err != nil {
+		log.Fatalf("Failed to initialize local manager: %v", err)
+	}
+	remoteManager, err := NewRemoteManager()
+	if err != nil {
+		log.Fatalf("Failed to initialize remote manager: %v", err)
+	}
+	ws.localManager = localManager
+	ws.remoteManager = remoteManager
+
 	// Setup routes
 	ws.setupRoutes()
 
@@ -99,8 +64,51 @@ func NewWebServer(db *Database, rootPath string) *WebServer {
 }
 
 func (ws *WebServer) setupRoutes() {
-	// UI routes
-	ws.router.GET("/", ws.handleMainUI)
+	// Create filesystem for static files (strip "web/" prefix)
+	staticFS, err := fs.Sub(webFiles, "web/static")
+	if err != nil {
+		log.Fatalf("Failed to create static filesystem: %v", err)
+	}
+
+	// Create filesystem for templates
+	templatesFS, err := fs.Sub(webFiles, "web/templates")
+	if err != nil {
+		log.Fatalf("Failed to create templates filesystem: %v", err)
+	}
+
+	// Serve static files from embedded filesystem
+	ws.router.StaticFS("static", http.FS(staticFS))
+
+	// Serve favicon
+	ws.router.GET("/favicon.ico", func(c *gin.Context) {
+		c.Header("Content-Type", "image/svg+xml")
+		data, err := webFiles.ReadFile("web/static/images/favicon.svg")
+		if err != nil {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		c.Data(http.StatusOK, "image/svg+xml", data)
+	})
+	ws.router.GET("/favicon.svg", func(c *gin.Context) {
+		c.Header("Content-Type", "image/svg+xml")
+		data, err := webFiles.ReadFile("web/static/images/favicon.svg")
+		if err != nil {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		c.Data(http.StatusOK, "image/svg+xml", data)
+	})
+
+	// Serve index.html from embedded filesystem
+	ws.router.GET("/", func(c *gin.Context) {
+		data, err := fs.ReadFile(templatesFS, "index.html")
+		if err != nil {
+			slog.Error("failed to read index.html", "error", err)
+			c.String(http.StatusInternalServerError, "Failed to load index.html")
+			return
+		}
+		c.Data(http.StatusOK, "text/html; charset=utf-8", data)
+	})
 	ws.router.GET("/ui/photos/:category", ws.handleUIPhotos)
 
 	// API routes
@@ -118,6 +126,38 @@ func (ws *WebServer) setupRoutes() {
 }
 
 func (ws *WebServer) Start(port string) {
+	// listen for updates and restart the slideshow
+	go func() {
+		for {
+			select {
+			case <-ws.Updated:
+			case <-ws.remoteManager.Updated:
+			case <-ws.localManager.Updated:
+				slog.Info("found new updates, restarting slideshow")
+				ws.imvMutex.Lock()
+				imgPaths, err := ws.getImgPaths()
+				if err != nil {
+					slog.Error("error while getting image paths", "error", err)
+					ws.imvMutex.Unlock()
+					continue
+				}
+				settings, err := ws.db.GetAppSettings()
+				if err != nil {
+					slog.Error("error while getting settings", "error", err)
+					ws.imvMutex.Unlock()
+					continue
+				}
+				if err := restartSlideshow(imgPaths, settings.SlideshowIntervalSeconds); err != nil {
+					slog.Error("error while restarting slideshow from update", "error", err)
+				}
+				ws.imvMutex.Unlock()
+			}
+		}
+	}()
+
+	go ws.localManager.Run()
+	go ws.remoteManager.Run()
+
 	log.Printf("Starting web server on port %s", port)
 	if err := ws.router.Run(port); err != nil {
 		log.Fatalf("Failed to start web server: %v", err)
@@ -147,7 +187,6 @@ func (ws *WebServer) getImgPaths() ([]string, error) {
 	for i, photo := range allPhotos {
 		imgPaths[i] = ws.buildImgPathFromPhoto(photo)
 	}
-	slog.Info("image paths", "imgPaths", imgPaths)
 	return imgPaths, nil
 }
 
@@ -276,19 +315,7 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 			return
 		}
 
-		// Generate HTML fragment
-		html := ""
-		for _, photo := range photos {
-			encodedName := url.PathEscape(photo.PhotoName)
-			imageURL := fmt.Sprintf("/photos/%d/%s/image", photo.Category, encodedName)
-			html += fmt.Sprintf(
-				"  <img src=\"%s\" alt=\"%s\" class=\"photo-thumbnail\" onclick=\"openPhotoModal('%s')\" />\n",
-				imageURL,
-				photo.PhotoName,
-				imageURL,
-			)
-		}
-
+		html := ws.generateUIPhotosHTML(photos, 1)
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
 
 		// trigger slideshow restart
@@ -607,12 +634,13 @@ func (ws *WebServer) handleUpdateSettings(c *gin.Context) {
 	}
 
 	if newSettings.ShuffleEnabled && len(imgPaths) > 1 {
-		rand.Seed(time.Now().UnixNano())
 		rand.Shuffle(len(imgPaths), func(i, j int) {
 			imgPaths[i], imgPaths[j] = imgPaths[j], imgPaths[i]
 		})
 	}
 
+	ws.imvMutex.Lock()
+	defer ws.imvMutex.Unlock()
 	if err := restartSlideshow(imgPaths, newSettings.SlideshowIntervalSeconds); err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to restart slideshow: %v", err)})
 		return
@@ -704,6 +732,8 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 	}
 
 	interval := req.Interval
+	ws.imvMutex.Lock()
+	defer ws.imvMutex.Unlock()
 	// Let restartSlideshow handle defaulting when interval <= 0
 	if err := restartSlideshow(ordered, interval); err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
@@ -720,65 +750,8 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 	})
 }
 
-type Output struct {
-	Name         string       `json:"name"`
-	Description  string       `json:"description"`
-	Make         string       `json:"make"`
-	Model        string       `json:"model"`
-	Serial       string       `json:"serial"`
-	PhysicalSize PhysicalSize `json:"physical_size"`
-	Enabled      bool         `json:"enabled"`
-	Modes        []Mode       `json:"modes"`
-	Position     Position     `json:"position"`
-	Transform    string       `json:"transform"`
-	Scale        float64      `json:"scale"`
-	AdaptiveSync bool         `json:"adaptive_sync"`
-}
-
-type PhysicalSize struct {
-	Width  int `json:"width"`
-	Height int `json:"height"`
-}
-
-type Mode struct {
-	Width     int     `json:"width"`
-	Height    int     `json:"height"`
-	Refresh   float64 `json:"refresh"`
-	Preferred bool    `json:"preferred"`
-	Current   bool    `json:"current"`
-}
-
-type Position struct {
-	X int `json:"x"`
-	Y int `json:"y"`
-}
-
-// getDisplayEnabled inspects the current state of the HDMI-A-1 output using wlr-randr.
-// It returns true if the output is enabled, false if disabled.
-func getDisplayEnabled() (bool, error) {
-	outputName := "HDMI-A-1"
-	cmd := exec.Command("wlr-randr", "--output", outputName, "--json")
-	out, err := cmd.Output()
-	if err != nil {
-		return false, fmt.Errorf("failed to run wlr-randr: %w", err)
-	}
-
-	var results []Output
-	if err := json.Unmarshal(out, &results); err != nil {
-		return false, fmt.Errorf("failed to unmarshal wlr-randr output: %w", err)
-	}
-
-	for _, result := range results {
-		if result.Name == outputName {
-			return result.Enabled, nil
-		}
-	}
-
-	return false, fmt.Errorf("output %s not found", outputName)
-}
-
 func (ws *WebServer) handleGetDisplay(c *gin.Context) {
-	enabled, err := getDisplayEnabled()
+	enabled, err := wlrrandr.GetDisplayEnabled()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to get display state: %v", err)})
 		return
@@ -794,22 +767,14 @@ func (ws *WebServer) handleUpdateDisplay(c *gin.Context) {
 		return
 	}
 
-	var arg string
 	desiredEnabled := state == "1"
-	if desiredEnabled {
-		arg = "--on"
-	} else {
-		arg = "--off"
-	}
-
-	cmd := exec.Command("wlr-randr", "--output", "HDMI-A-1", arg)
-	if err := cmd.Run(); err != nil {
+	if err := wlrrandr.UpdateDisplayEnabled(desiredEnabled); err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to update display state: %v", err)})
 		return
 	}
 
 	// Re-read state to reflect actual output if possible.
-	enabled, err := getDisplayEnabled()
+	enabled, err := wlrrandr.GetDisplayEnabled()
 	if err != nil {
 		slog.Warn("failed to re-read display state after update", "error", err)
 		enabled = desiredEnabled
@@ -873,7 +838,11 @@ func (ws *WebServer) handleUIPhotos(c *gin.Context) {
 		return
 	}
 
-	// Generate HTML fragment
+	html := ws.generateUIPhotosHTML(photos, category)
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+}
+
+func (ws *WebServer) generateUIPhotosHTML(photos []Photo, category int) string {
 	html := "<div class=\"photo-row\">\n"
 	for _, photo := range photos {
 		encodedName := url.PathEscape(photo.PhotoName)
@@ -924,905 +893,5 @@ func (ws *WebServer) handleUIPhotos(c *gin.Context) {
 		html += "  </div>\n"
 	}
 	html += "</div>"
-
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
-}
-
-func (ws *WebServer) handleMainUI(c *gin.Context) {
-	html := `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Photo Gallery</title>
-<script src="https://unpkg.com/htmx.org@1.9.10"></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-<style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background-color: #f5f5f5;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            display: flex;
-            min-height: calc(100vh - 40px);
-        }
-        
-        .sidebar {
-            width: 64px;
-            background-color: #ffffff;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            padding: 16px 0;
-            margin-right: 20px;
-            gap: 12px;
-        }
-        
-        .nav-item {
-            background: none;
-            border: none;
-            color: #888;
-            cursor: pointer;
-            width: 100%;
-            padding: 10px 0;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 22px;
-            transition: color 0.2s, background-color 0.2s;
-        }
-        
-        .nav-item:hover {
-            color: #333;
-            background-color: rgba(0,0,0,0.03);
-        }
-        
-        .nav-item.active {
-            color: #007AFF;
-            background-color: rgba(0,122,255,0.08);
-        }
-        
-        .main-content {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .view {
-            display: none;
-        }
-        
-        .view.active-view {
-            display: block;
-        }
-        
-        .category-section {
-            margin-bottom: 40px;
-        }
-        
-        .category-header {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            margin-bottom: 15px;
-        }
-        
-        .category-title {
-            font-size: 24px;
-            font-weight: 600;
-            color: #333;
-            margin: 0;
-        }
-        
-        .upload-form {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .upload-button {
-            background-color: #007AFF;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 500;
-            transition: background-color 0.2s;
-        }
-        
-        .upload-button:hover {
-            background-color: #0056CC;
-        }
-        
-        .upload-button:disabled {
-            background-color: #ccc;
-            cursor: not-allowed;
-        }
-        
-        .file-input {
-            display: none;
-        }
-        
-        .file-input-label {
-            display: inline-block;
-            padding: 8px 16px;
-            background-color: #f0f0f0;
-            border: 1px solid #ddd;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: background-color 0.2s;
-        }
-        
-        .file-input-label:hover {
-            background-color: #e0e0e0;
-        }
-        
-        .upload-status {
-            font-size: 14px;
-            color: #666;
-            margin-left: 10px;
-        }
-        
-        .upload-status.success {
-            color: #28a745;
-        }
-        
-        .upload-status.error {
-            color: #dc3545;
-        }
-        
-        .file-name {
-            font-size: 12px;
-            color: #666;
-            margin-left: 10px;
-            font-style: italic;
-        }
-        
-        .photo-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            background-color: white;
-            padding: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-
-        .photo-item {
-            position: relative;
-            display: inline-block;
-        }
-        
-        .photo-thumbnail {
-            width: 200px;
-            height: 200px;
-            object-fit: cover;
-            border-radius: 4px;
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-        
-        .photo-thumbnail:hover {
-            transform: scale(1.05);
-        }
-
-        .photo-play-btn {
-            position: absolute;
-            bottom: 8px;
-            left: 50%;
-            transform: translateX(-50%);
-            background-color: rgba(0, 0, 0, 0.4);
-            color: #fff;
-            border: none;
-            border-radius: 50%;
-            width: 32px;
-            height: 32px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            font-size: 18px;
-            text-shadow: 0 1px 3px rgba(0,0,0,0.8);
-			padding-left: 3px;
-        }
-
-        .photo-delete-btn {
-            position: absolute;
-            bottom: 8px;
-            right: 8px;
-            background-color: transparent;
-            color: #fff;
-            border: none;
-            border-radius: 50%;
-            width: 32px;
-            height: 32px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            font-size: 18px;
-            text-shadow: 0 1px 3px rgba(0,0,0,0.8);
-            transition: transform 0.1s;
-        }
-
-        .photo-delete-btn:hover {
-            transform: scale(1.05);
-        }
-        
-        .loading {
-            color: #666;
-            font-style: italic;
-        }
-        
-        .photo-modal {
-            display: none;
-            position: fixed;
-            z-index: 1000;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0, 0, 0, 0.9);
-            cursor: pointer;
-        }
-        
-        .photo-modal.active {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        
-        .photo-modal-content {
-            max-width: 90%;
-            max-height: 90%;
-            object-fit: contain;
-            border-radius: 4px;
-        }
-        
-        .photo-modal-close {
-            position: absolute;
-            top: 20px;
-            right: 30px;
-            color: #fff;
-            font-size: 40px;
-            font-weight: bold;
-            cursor: pointer;
-            z-index: 1001;
-        }
-        
-        .photo-modal-close:hover {
-            color: #ccc;
-        }
-
-        /* Settings layout */
-        #settings-form {
-            margin-top: 20px;
-            max-width: 480px;
-        }
-
-        .settings-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 16px;
-            gap: 12px;
-        }
-
-        .settings-row label,
-        .settings-row span {
-            font-size: 14px;
-            color: #333;
-        }
-
-        .interval-input-group {
-            display: flex;
-            gap: 8px;
-            align-items: center;
-        }
-
-        .interval-input-group input[type="number"] {
-            width: 80px;
-            padding: 6px 8px;
-            border-radius: 4px;
-            border: 1px solid #ccc;
-            font-size: 14px;
-        }
-
-        .interval-input-group select {
-            padding: 6px 8px;
-            border-radius: 4px;
-            border: 1px solid #ccc;
-            font-size: 14px;
-            background-color: #fff;
-        }
-
-        .settings-help-text {
-            display: block;
-            font-size: 12px;
-            color: #666;
-            margin-top: 4px;
-        }
-
-        .toggle-button {
-            position: relative;
-            width: 52px;
-            height: 28px;
-            border-radius: 14px;
-            border: none;
-            cursor: pointer;
-            padding: 0;
-            background-color: #e0e0e0;
-            transition: background-color 0.2s ease;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .toggle-button::before {
-            content: "";
-            position: absolute;
-            width: 22px;
-            height: 22px;
-            border-radius: 50%;
-            background-color: #fff;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.25);
-            left: 3px;
-            transition: transform 0.2s ease;
-        }
-
-        .toggle-button.toggle-on {
-            background-color: #007AFF;
-        }
-
-        .toggle-button.toggle-on::before {
-            transform: translateX(22px);
-        }
-
-        .toggle-button.toggle-off {
-            background-color: #e0e0e0;
-        }
-
-        .toggle-label-on,
-        .toggle-label-off {
-            pointer-events: none;
-            font-size: 11px;
-            color: #fff;
-            opacity: 0;
-            transition: opacity 0.15s ease;
-        }
-
-        .toggle-button.toggle-on .toggle-label-on {
-            opacity: 1;
-        }
-
-        .toggle-button.toggle-off .toggle-label-off {
-            opacity: 1;
-        }
-
-        .settings-actions {
-            margin-top: 8px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .settings-save-btn {
-            background-color: #007AFF;
-            color: white;
-            border: none;
-            padding: 8px 18px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 500;
-            transition: background-color 0.2s;
-        }
-
-        .settings-save-btn:disabled {
-            background-color: #ccc;
-            cursor: not-allowed;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <nav class="sidebar">
-            <button class="nav-item active" type="button" data-view="photos" onclick="switchView('photos', this)">
-                <i class="fa-solid fa-images"></i>
-            </button>
-            <button class="nav-item" type="button" data-view="slideshow" onclick="switchView('slideshow', this)">
-                <i class="fa-solid fa-play-circle"></i>
-            </button>
-            <button class="nav-item" type="button" data-view="settings" onclick="switchView('settings', this)">
-                <i class="fa-solid fa-gear"></i>
-            </button>
-        </nav>
-        <div class="main-content">
-            <div id="view-photos" class="view active-view">
-                <div class="category-section">
-                    <div class="category-header">
-                    	<h2 class="category-title">Surprise</h2>
-					</div>
-                    <div id="surprise-photos" class="photo-row loading" 
-                     hx-get="/ui/photos/0" 
-                     hx-trigger="load" 
-                     hx-swap="innerHTML">
-                     Loading...
-                    </div>
-                </div>
-                
-                <div class="category-section">
-                    <div class="category-header">
-                        <h2 class="category-title">My Photos</h2>
-                        <form class="upload-form" 
-                              hx-post="/upload" 
-                              hx-encoding="multipart/form-data"
-                              hx-target="#my-photos"
-                              hx-swap="innerHTML"
-                              hx-indicator="#upload-indicator"
-                              id="upload-form">
-                            <label for="file-input" class="file-input-label">Upload</label>
-                            <input type="file" 
-                                   id="file-input" 
-                                   name="file" 
-                                   class="file-input" 
-                                   accept=".jpg,.jpeg,.png,.JPG,.JPEG,.PNG"
-                                   required
-                                   onchange="document.getElementById('file-name').textContent=this.files[0]?this.files[0].name:''; htmx.trigger('#upload-form', 'submit');">
-                            <span id="file-name" class="file-name"></span>
-                            <span id="upload-indicator" class="upload-status" style="display: none;">Uploading...</span>
-                        </form>
-                    </div>
-                    <div id="my-photos" class="photo-row loading" 
-                         hx-get="/ui/photos/1" 
-                         hx-trigger="load, refreshPhotos from:body" 
-                         hx-swap="innerHTML">
-                        Loading...
-                    </div>
-                </div>
-            </div>
-
-            <div id="view-slideshow" class="view">
-                <div class="category-section">
-                    <h2 class="category-title">Slideshow</h2>
-                    <div class="settings-row" style="margin-top: 16px; justify-content: flex-start; gap: 12px;">
-                        <span>Display On</span>
-                        <button
-                            type="button"
-                            id="toggle-display"
-                            class="toggle-button toggle-off"
-                            data-value="true"
-                            onclick="toggleDisplay(this)">
-                            <span class="toggle-label-on"></span>
-                            <span class="toggle-label-off"></span>
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            <div id="view-settings" class="view">
-                <div class="category-section">
-                    <h2 class="category-title">Settings</h2>
-                    <div id="settings-form">
-                        <div class="settings-row">
-                            <label for="interval-value">Slideshow Interval</label>
-                            <div class="interval-input-group">
-                                <input type="number" id="interval-value" min="1" step="1" value="15">
-                                <select id="interval-unit">
-                                    <option value="seconds">Seconds</option>
-                                    <option value="minutes">Minutes</option>
-                                    <option value="hours">Hours</option>
-                                </select>
-                            </div>
-                            <small class="settings-help-text">Minimum 1 second. You can specify the interval in seconds, minutes, or hours.</small>
-                        </div>
-
-                        <div class="settings-row">
-                            <span>Include Surprise Photos</span>
-                            <button type="button" id="toggle-include-surprise" class="toggle-button toggle-on" data-value="true" onclick="toggleSettingButton(this)">
-                                <span class="toggle-label-on"></span>
-                                <span class="toggle-label-off"></span>
-                            </button>
-                        </div>
-
-                        <div class="settings-row">
-                            <span>Shuffle Order</span>
-                            <button type="button" id="toggle-shuffle" class="toggle-button toggle-off" data-value="false" onclick="toggleSettingButton(this)">
-                                <span class="toggle-label-on"></span>
-                                <span class="toggle-label-off"></span>
-                            </button>
-                        </div>
-
-                        <div class="settings-actions">
-                            <button type="button" id="settings-save-btn" class="settings-save-btn" disabled onclick="saveSettings()">Save</button>
-                            <span id="settings-status" class="upload-status" style="display:none;"></span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <div id="photo-modal" class="photo-modal" onclick="closePhotoModal()">
-        <span class="photo-modal-close" onclick="event.stopPropagation(); closePhotoModal()">&times;</span>
-        <img id="photo-modal-img" class="photo-modal-content" src="" alt="Full size photo" onclick="event.stopPropagation();">
-    </div>
-    
-    <script>
-        function openPhotoModal(imageUrl) {
-            const modal = document.getElementById('photo-modal');
-            const modalImg = document.getElementById('photo-modal-img');
-            modalImg.src = imageUrl;
-            modal.classList.add('active');
-            document.body.style.overflow = 'hidden';
-        }
-        
-        function closePhotoModal() {
-            const modal = document.getElementById('photo-modal');
-            modal.classList.remove('active');
-            document.body.style.overflow = 'auto';
-        }
-        
-        // Close modal on Escape key
-        document.addEventListener('keydown', function(event) {
-            if (event.key === 'Escape') {
-                closePhotoModal();
-            }
-        });
-
-        function switchView(viewName, button) {
-            const views = document.querySelectorAll('.view');
-            views.forEach(function(view) {
-                view.classList.remove('active-view');
-            });
-
-            const target = document.getElementById('view-' + viewName);
-            if (target) {
-                target.classList.add('active-view');
-            }
-
-            const navItems = document.querySelectorAll('.nav-item');
-            navItems.forEach(function(item) {
-                item.classList.remove('active');
-            });
-
-            if (button) {
-                button.classList.add('active');
-            }
-        }
-
-        function playFromPhoto(button) {
-            const encodedName = button.dataset.name;
-            const category = parseInt(button.dataset.category, 10);
-            if (!encodedName || Number.isNaN(category)) {
-                console.error('Missing photo metadata for playFromPhoto');
-                return;
-            }
-            const photoName = decodeURIComponent(encodedName);
-
-            fetch('/slideshow/play', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    photo_name: photoName,
-                    category: category,
-                    interval: 0
-                })
-            }).then(response => {
-                if (!response.ok) {
-                    return response.json().then(data => {
-                        const msg = data && data.error ? data.error : 'Failed to start slideshow';
-                        alert(msg);
-                    }).catch(() => {
-                        alert('Failed to start slideshow');
-                    });
-                }
-            }).catch(() => {
-                alert('Failed to start slideshow');
-            });
-        }
-
-        // Settings state
-        let originalSettings = null;
-        let currentSettings = null;
-
-        // Display state for slideshow view
-        let currentDisplayEnabled = null;
-
-        function loadSettings() {
-            fetch('/settings')
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error('Failed to load settings');
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    originalSettings = {
-                        slideshow_interval_seconds: data.slideshow_interval_seconds,
-                        include_surprise: data.include_surprise,
-                        shuffle_enabled: data.shuffle_enabled
-                    };
-                    currentSettings = { ...originalSettings };
-                    applySettingsToUI(currentSettings);
-                    updateSettingsSaveButton();
-                })
-                .catch(err => {
-                    console.error(err);
-                    const statusEl = document.getElementById('settings-status');
-                    if (statusEl) {
-                        statusEl.textContent = 'Failed to load settings';
-                        statusEl.classList.remove('success');
-                        statusEl.classList.add('error');
-                        statusEl.style.display = 'inline';
-                    }
-                });
-        }
-
-        function applySettingsToUI(settings) {
-            const intervalInput = document.getElementById('interval-value');
-            const intervalUnit = document.getElementById('interval-unit');
-            const includeBtn = document.getElementById('toggle-include-surprise');
-            const shuffleBtn = document.getElementById('toggle-shuffle');
-
-            if (!intervalInput || !intervalUnit || !includeBtn || !shuffleBtn) {
-                return;
-            }
-
-            const totalSeconds = settings.slideshow_interval_seconds || 15;
-            let value = totalSeconds;
-            let unit = 'seconds';
-
-            if (totalSeconds % 3600 === 0) {
-                unit = 'hours';
-                value = totalSeconds / 3600;
-            } else if (totalSeconds % 60 === 0) {
-                unit = 'minutes';
-                value = totalSeconds / 60;
-            }
-
-            intervalInput.value = value;
-            intervalUnit.value = unit;
-
-            setToggleButton(includeBtn, settings.include_surprise);
-            setToggleButton(shuffleBtn, settings.shuffle_enabled);
-        }
-
-        function setToggleButton(btn, isOn) {
-            if (!btn) return;
-            btn.dataset.value = isOn ? 'true' : 'false';
-            if (isOn) {
-                btn.classList.add('toggle-on');
-                btn.classList.remove('toggle-off');
-            } else {
-                btn.classList.add('toggle-off');
-                btn.classList.remove('toggle-on');
-            }
-        }
-
-        function toggleSettingButton(btn) {
-            const current = btn.dataset.value === 'true';
-            const next = !current;
-            setToggleButton(btn, next);
-
-            if (!currentSettings) {
-                currentSettings = { ...originalSettings };
-            }
-
-            if (btn.id === 'toggle-include-surprise') {
-                currentSettings.include_surprise = next;
-            } else if (btn.id === 'toggle-shuffle') {
-                currentSettings.shuffle_enabled = next;
-            }
-
-            updateSettingsSaveButton();
-        }
-
-        function onIntervalChanged() {
-            const intervalInput = document.getElementById('interval-value');
-            const intervalUnit = document.getElementById('interval-unit');
-            if (!intervalInput || !intervalUnit) return;
-
-            let value = parseInt(intervalInput.value, 10);
-            if (Number.isNaN(value) || value < 1) {
-                value = 1;
-                intervalInput.value = value;
-            }
-
-            const unit = intervalUnit.value;
-            let seconds = value;
-            if (unit === 'minutes') {
-                seconds = value * 60;
-            } else if (unit === 'hours') {
-                seconds = value * 3600;
-            }
-
-            if (!currentSettings) {
-                currentSettings = { ...originalSettings };
-            }
-            currentSettings.slideshow_interval_seconds = seconds;
-            updateSettingsSaveButton();
-        }
-
-        function updateSettingsSaveButton() {
-            const saveBtn = document.getElementById('settings-save-btn');
-            if (!saveBtn) return;
-
-            if (!originalSettings || !currentSettings) {
-                saveBtn.disabled = true;
-                return;
-            }
-
-            const changed = JSON.stringify(originalSettings) !== JSON.stringify(currentSettings);
-            saveBtn.disabled = !changed;
-        }
-
-        function saveSettings() {
-            if (!currentSettings) return;
-
-            const statusEl = document.getElementById('settings-status');
-            if (statusEl) {
-                statusEl.textContent = 'Saving...';
-                statusEl.classList.remove('error', 'success');
-                statusEl.style.display = 'inline';
-            }
-
-            const payload = {
-                slideshow_interval_seconds: currentSettings.slideshow_interval_seconds,
-                include_surprise: !!currentSettings.include_surprise,
-                shuffle_enabled: !!currentSettings.shuffle_enabled
-            };
-
-            if (payload.slideshow_interval_seconds < 1) {
-                payload.slideshow_interval_seconds = 1;
-            }
-
-            fetch('/settings', {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(payload)
-            })
-                .then(response => {
-                    if (!response.ok) {
-                        return response.json().then(data => {
-                            const msg = data && data.error ? data.error : 'Failed to save settings';
-                            throw new Error(msg);
-                        }).catch(() => {
-                            throw new Error('Failed to save settings');
-                        });
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    originalSettings = {
-                        slideshow_interval_seconds: data.slideshow_interval_seconds,
-                        include_surprise: data.include_surprise,
-                        shuffle_enabled: data.shuffle_enabled
-                    };
-                    currentSettings = { ...originalSettings };
-                    applySettingsToUI(currentSettings);
-                    updateSettingsSaveButton();
-
-                    if (statusEl) {
-                        statusEl.textContent = 'Saved';
-                        statusEl.classList.remove('error');
-                        statusEl.classList.add('success');
-                        statusEl.style.display = 'inline';
-                    }
-                })
-                .catch(err => {
-                    console.error(err);
-                    if (statusEl) {
-                        statusEl.textContent = err.message || 'Failed to save settings';
-                        statusEl.classList.remove('success');
-                        statusEl.classList.add('error');
-                        statusEl.style.display = 'inline';
-                    }
-                });
-        }
-
-        function applyDisplayToUI(enabled) {
-            const btn = document.getElementById('toggle-display');
-            if (!btn) return;
-            setToggleButton(btn, !!enabled);
-            currentDisplayEnabled = !!enabled;
-        }
-
-        function loadDisplayState() {
-            fetch('/display')
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error('Failed to load display state');
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    applyDisplayToUI(data.enabled);
-                })
-                .catch(err => {
-                    console.error(err);
-                });
-        }
-
-        function toggleDisplay(btn) {
-            if (currentDisplayEnabled === null) {
-                // State not yet loaded; attempt to load then exit.
-                loadDisplayState();
-                return;
-            }
-
-            const previous = currentDisplayEnabled;
-            const next = !previous;
-            setToggleButton(btn, next);
-            currentDisplayEnabled = next;
-            btn.disabled = true;
-
-            const desired = next ? 1 : 0;
-
-            fetch('/display/' + desired, {
-                method: 'PUT'
-            })
-                .then(response => {
-                    if (!response.ok) {
-                        return response.json().then(data => {
-                            const msg = data && data.error ? data.error : 'Failed to update display';
-                            throw new Error(msg);
-                        }).catch(() => {
-                            throw new Error('Failed to update display');
-                        });
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    applyDisplayToUI(data.enabled);
-                })
-                .catch(err => {
-                    console.error(err);
-                    alert(err.message || 'Failed to update display');
-                    // Revert UI to previous state
-                    applyDisplayToUI(previous);
-                })
-                .finally(() => {
-                    btn.disabled = false;
-                });
-        }
-
-        document.addEventListener('DOMContentLoaded', function() {
-            const intervalInput = document.getElementById('interval-value');
-            const intervalUnit = document.getElementById('interval-unit');
-            if (intervalInput) {
-                intervalInput.addEventListener('change', onIntervalChanged);
-                intervalInput.addEventListener('input', onIntervalChanged);
-            }
-            if (intervalUnit) {
-                intervalUnit.addEventListener('change', onIntervalChanged);
-            }
-
-            loadSettings();
-            loadDisplayState();
-        });
-    </script>
-</body>
-</html>`
-
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+	return html
 }

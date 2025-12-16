@@ -1,4 +1,4 @@
-module digitalphotoframe
+module github.com/aouyang1/digitalphotoframe
 
 go 1.24.5
 

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Photo frame background -->
+  <rect x="4" y="4" width="56" height="56" rx="4" fill="#007AFF"/>
+  
+  <!-- Inner white area -->
+  <rect x="8" y="8" width="48" height="48" rx="2" fill="#ffffff"/>
+  
+  <!-- Photo stack representation (multiple images) -->
+  <!-- Bottom layer -->
+  <rect x="12" y="16" width="40" height="28" rx="1" fill="#f0f0f0" stroke="#ddd" stroke-width="0.5"/>
+  <!-- Middle layer -->
+  <rect x="14" y="14" width="40" height="28" rx="1" fill="#ffffff" stroke="#ddd" stroke-width="0.5"/>
+  <!-- Top layer with image icon -->
+  <rect x="16" y="12" width="40" height="28" rx="1" fill="#ffffff" stroke="#007AFF" stroke-width="1"/>
+  <!-- Simple image representation -->
+  <circle cx="28" cy="20" r="3" fill="#007AFF" opacity="0.6"/>
+  <rect x="24" y="24" width="8" height="10" rx="1" fill="#007AFF" opacity="0.4"/>
+</svg>

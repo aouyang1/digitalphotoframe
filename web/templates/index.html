@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Photo Gallery</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<script src="https://unpkg.com/htmx.org@1.9.10"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body>
+    <div class="container">
+        <nav class="sidebar">
+            <button class="nav-item active" type="button" data-view="photos" onclick="switchView('photos', this)">
+                <i class="fa-solid fa-images"></i>
+            </button>
+            <button class="nav-item" type="button" data-view="slideshow" onclick="switchView('slideshow', this)">
+                <i class="fa-solid fa-play-circle"></i>
+            </button>
+            <button class="nav-item" type="button" data-view="settings" onclick="switchView('settings', this)">
+                <i class="fa-solid fa-gear"></i>
+            </button>
+        </nav>
+        <div class="main-content">
+            <div id="view-photos" class="view active-view">
+                <div class="category-section">
+                    <div class="category-header">
+                    	<h2 class="category-title">Surprise</h2>
+					</div>
+                    <div id="surprise-photos" class="photo-row loading" 
+                     hx-get="/ui/photos/0" 
+                     hx-trigger="load" 
+                     hx-swap="innerHTML">
+                     Loading...
+                    </div>
+                </div>
+                
+                <div class="category-section">
+                    <div class="category-header">
+                        <h2 class="category-title">My Photos</h2>
+                        <form class="upload-form" 
+                              hx-post="/upload" 
+                              hx-encoding="multipart/form-data"
+                              hx-target="#my-photos"
+                              hx-swap="innerHTML"
+                              hx-indicator="#upload-indicator"
+                              id="upload-form">
+                            <label for="file-input" class="file-input-label">Upload</label>
+                            <input type="file" 
+                                   id="file-input" 
+                                   name="file" 
+                                   class="file-input" 
+                                   accept=".jpg,.jpeg,.png,.JPG,.JPEG,.PNG"
+                                   required
+                                   onchange="document.getElementById('file-name').textContent=this.files[0]?this.files[0].name:''; htmx.trigger('#upload-form', 'submit');">
+                            <span id="file-name" class="file-name"></span>
+                            <span id="upload-indicator" class="upload-status" style="display: none;">Uploading...</span>
+                        </form>
+                    </div>
+                    <div id="my-photos" class="photo-row loading" 
+                         hx-get="/ui/photos/1" 
+                         hx-trigger="load, refreshPhotos from:body" 
+                         hx-swap="innerHTML">
+                        Loading...
+                    </div>
+                </div>
+            </div>
+
+            <div id="view-slideshow" class="view">
+                <div class="category-section">
+                    <h2 class="category-title">Slideshow</h2>
+                    <div class="settings-row" style="margin-top: 16px; justify-content: flex-start; gap: 12px;">
+                        <span>Display On</span>
+                        <button
+                            type="button"
+                            id="toggle-display"
+                            class="toggle-button toggle-off"
+                            data-value="true"
+                            onclick="toggleDisplay(this)">
+                            <span class="toggle-label-on"></span>
+                            <span class="toggle-label-off"></span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="view-settings" class="view">
+                <div class="category-section">
+                    <h2 class="category-title">Settings</h2>
+                    <div id="settings-form">
+                        <div class="settings-row">
+                            <label for="interval-value">Slideshow Interval</label>
+                            <div class="interval-input-group">
+                                <input type="number" id="interval-value" min="1" step="1" value="15">
+                                <select id="interval-unit">
+                                    <option value="seconds">Seconds</option>
+                                    <option value="minutes">Minutes</option>
+                                    <option value="hours">Hours</option>
+                                </select>
+                            </div>
+                            <small class="settings-help-text">Minimum 1 second. You can specify the interval in seconds, minutes, or hours.</small>
+                        </div>
+
+                        <div class="settings-row">
+                            <span>Include Surprise Photos</span>
+                            <button type="button" id="toggle-include-surprise" class="toggle-button toggle-on" data-value="true" onclick="toggleSettingButton(this)">
+                                <span class="toggle-label-on"></span>
+                                <span class="toggle-label-off"></span>
+                            </button>
+                        </div>
+
+                        <div class="settings-row">
+                            <span>Shuffle Order</span>
+                            <button type="button" id="toggle-shuffle" class="toggle-button toggle-off" data-value="false" onclick="toggleSettingButton(this)">
+                                <span class="toggle-label-on"></span>
+                                <span class="toggle-label-off"></span>
+                            </button>
+                        </div>
+
+                        <div class="settings-actions">
+                            <button type="button" id="settings-save-btn" class="settings-save-btn" disabled onclick="saveSettings()">Save</button>
+                            <span id="settings-status" class="upload-status" style="display:none;"></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div id="photo-modal" class="photo-modal" onclick="closePhotoModal()">
+        <span class="photo-modal-close" onclick="event.stopPropagation(); closePhotoModal()">&times;</span>
+        <img id="photo-modal-img" class="photo-modal-content" src="" alt="Full size photo" onclick="event.stopPropagation();">
+    </div>
+    
+    <script src="/static/js/main.js"></script>
+</body>
+</html>
