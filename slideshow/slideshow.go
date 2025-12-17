@@ -64,11 +64,21 @@ func rotateImages(rootPath string, targetMaxDim int) error {
 		filepath.Join(rootPath, "original/surprise"),
 	}
 
-	for _, dir := range dirs {
+	photosDirs := []string{
+		filepath.Join(rootPath, "photos"),
+		filepath.Join(rootPath, "photos/surprise"),
+	}
+	for i, dir := range dirs {
 		// Check if directory exists and has files
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			slog.Debug("directory does not exist or is empty, skipping rotation", "dir", dir)
+			continue
+		}
+
+		photosEntries, err := os.ReadDir(photosDirs[i])
+		if err != nil {
+			slog.Debug("photos directory does not exist or is empty, skipping rotation", "dir", dir)
 			continue
 		}
 
@@ -79,10 +89,25 @@ func rotateImages(rootPath string, targetMaxDim int) error {
 				continue
 			}
 			name := entry.Name()
+
 			// Skip already rotated files
 			if strings.Contains(name, "_IMGP.") {
 				continue
 			}
+
+			// check if already rotated into photos directory
+			alreadyRotated := false
+			for _, photoEntry := range photosEntries {
+				if strings.HasPrefix(photoEntry.Name(), name) {
+					alreadyRotated = true
+					break
+				}
+			}
+			if alreadyRotated {
+				continue
+			}
+
+			// perform rotation in original directory
 			ext := filepath.Ext(name)
 			if util.SupportedExt.Contains(ext) {
 				imageFilePath := filepath.Join(dir, name)
@@ -173,22 +198,24 @@ func moveRotatedImages(rootPath string) error {
 
 func moveDirFiles(srcDir, dstDir string) {
 	entries, err := os.ReadDir(srcDir)
-	if err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
+	if err != nil {
+		slog.Error("unable to move directory files", "src", srcDir, "dst", dstDir, "error", err)
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
 
-			name := entry.Name()
-			if strings.Contains(name, "_IMGP.") {
-				src := filepath.Join(srcDir, name)
-				dst := filepath.Join(dstDir, name)
-				if err := os.Rename(src, dst); err != nil {
-					slog.Warn("failed to move rotated image", "src", src, "dst", dst, "error", err)
-				} else {
-					slog.Debug("moved rotated image", "from", src, "to", dst)
-				}
-			}
+		name := entry.Name()
+		if !strings.Contains(name, "_IMGP.") {
+			continue
+		}
+
+		src := filepath.Join(srcDir, name)
+		dst := filepath.Join(dstDir, name)
+		if err := os.Rename(src, dst); err != nil {
+			slog.Warn("failed to move rotated image", "src", src, "dst", dst, "error", err)
 		}
 	}
 }
