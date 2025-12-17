@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/aouyang1/digitalphotoframe/api/client"
+	"github.com/aouyang1/digitalphotoframe/util"
 	mapset "github.com/deckarep/golang-set/v2"
 )
 
@@ -78,7 +79,7 @@ func (l *LocalManager) getCurrentFiles() (mapset.Set[string], []fileInfo, error)
 	for _, dir := range dirs {
 		name := dir.Name()
 		ext := filepath.Ext(name)
-		if !supportedExt.Contains(ext) {
+		if !util.SupportedExt.Contains(ext) {
 			continue
 		}
 

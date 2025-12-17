@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/aouyang1/digitalphotoframe/api/client"
+	"github.com/aouyang1/digitalphotoframe/util"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
@@ -125,7 +126,7 @@ func (r *RemoteManager) getLocalFiles() (mapset.Set[string], error) {
 	localFiles := mapset.NewSet[string]()
 	for dir := range slices.Values(dirs) {
 		name := dir.Name()
-		if !supportedExt.Contains(filepath.Ext(name)) {
+		if !util.SupportedExt.Contains(filepath.Ext(name)) {
 			continue
 		}
 		localFiles.Add(name)
@@ -145,7 +146,7 @@ func (r *RemoteManager) getRemoteFiles(ctx context.Context) (mapset.Set[string],
 	}
 	for object := range slices.Values(objects) {
 		name := aws.ToString(object.Key)
-		if !supportedExt.Contains(filepath.Ext(name)) {
+		if !util.SupportedExt.Contains(filepath.Ext(name)) {
 			continue
 		}
 		remoteFiles.Add(name)

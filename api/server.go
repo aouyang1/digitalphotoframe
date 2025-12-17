@@ -20,14 +20,9 @@ import (
 	"github.com/aouyang1/digitalphotoframe/api/models"
 	"github.com/aouyang1/digitalphotoframe/slideshow"
 	"github.com/aouyang1/digitalphotoframe/store"
+	"github.com/aouyang1/digitalphotoframe/util"
 	"github.com/aouyang1/digitalphotoframe/wlrrandr"
-	mapset "github.com/deckarep/golang-set/v2"
 	"github.com/gin-gonic/gin"
-)
-
-var supportedExt = mapset.NewSet(
-	".jpeg", ".jpg", ".JPEG", ".JPG",
-	".png", ".PNG",
 )
 
 //go:embed web/templates/* web/static/**
@@ -237,7 +232,7 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 
 	// Validate file extension
 	ext := filepath.Ext(file.Filename)
-	if !supportedExt.Contains(ext) {
+	if !util.SupportedExt.Contains(ext) {
 		errorMsg := fmt.Sprintf("Unsupported file extension: %s. Supported: .jpeg, .jpg, .png", ext)
 		if isHTMX {
 			c.String(http.StatusBadRequest, "Error: "+errorMsg)
@@ -367,7 +362,7 @@ func (ws *WebServer) handleRegisterPhoto(c *gin.Context) {
 
 	// Validate file extension
 	ext := filepath.Ext(req.PhotoName)
-	if !supportedExt.Contains(ext) {
+	if !util.SupportedExt.Contains(ext) {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Error: fmt.Sprintf("Unsupported file extension: %s. Supported: .jpeg, .jpg, .png", ext),
 		})
@@ -713,7 +708,7 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 
 	// Optional: validate extension similar to upload/register handlers
 	ext := filepath.Ext(req.PhotoName)
-	if ext == "" || !supportedExt.Contains(ext) {
+	if ext == "" || !util.SupportedExt.Contains(ext) {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Error: fmt.Sprintf("Unsupported or missing file extension: %s. Supported: .jpeg, .jpg, .png", ext),
 		})

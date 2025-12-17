@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/aouyang1/digitalphotoframe/util"
 )
 
 func clearImgpArtifacts(rootPath string) error {
@@ -82,7 +84,7 @@ func rotateImages(rootPath string, targetMaxDim int) error {
 				continue
 			}
 			ext := filepath.Ext(name)
-			if supportedExt.Contains(ext) {
+			if util.SupportedExt.Contains(ext) {
 				imageFilePath := filepath.Join(dir, name)
 				imageFile, err := os.Open(imageFilePath)
 				if err != nil {
