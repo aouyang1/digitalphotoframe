@@ -6,12 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	mapset "github.com/deckarep/golang-set/v2"
-)
-
-var supportedExt = mapset.NewSet(
-	".jpeg", ".jpg", ".JPEG", ".JPG",
-	".png", ".PNG",
+	"github.com/aouyang1/digitalphotoframe/api"
+	"github.com/aouyang1/digitalphotoframe/slideshow"
+	"github.com/aouyang1/digitalphotoframe/store"
 )
 
 func main() {
@@ -23,23 +20,23 @@ func main() {
 
 	// Initialize database
 	dbPath := filepath.Join(rootPath, "photos.db")
-	database, err := NewDatabase(dbPath)
+	database, err := store.NewDatabase(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to initialize database: %v", err)
 	}
 	defer database.Close()
 
 	// Initialize and start web server
-	webServer := NewWebServer(database, rootPath)
+	webServer := api.NewWebServer(database, rootPath)
 
 	// Start slideshow
-	imgPaths, err := webServer.getImgPaths()
+	imgPaths, err := webServer.GetImgPaths()
 	if err != nil {
 		log.Fatalf("Failed to get image paths: %v", err)
 	}
 
 	interval := 15
-	if err := restartSlideshow(imgPaths, interval); err != nil {
+	if err := slideshow.RestartSlideshow(imgPaths, interval); err != nil {
 		slog.Error("Failed to start slideshow on initialization, continuing", "error", err)
 	}
 

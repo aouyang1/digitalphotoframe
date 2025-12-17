@@ -397,3 +397,43 @@ body {
     background-color: #ccc;
     cursor: not-allowed;
 }
+
+/* Schedule time input styles */
+.schedule-time-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.time-input-wrapper {
+    position: relative;
+    display: inline-block;
+}
+
+.time-input {
+    width: 100px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    font-size: 14px;
+    font-family: 'Courier New', monospace;
+    text-align: center;
+    letter-spacing: 2px;
+}
+
+.time-input:focus {
+    outline: none;
+    border-color: #007AFF;
+    box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.1);
+}
+
+.time-input::placeholder {
+    letter-spacing: 0;
+    color: #999;
+}
+
+#schedule-section {
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid #e0e0e0;
+}

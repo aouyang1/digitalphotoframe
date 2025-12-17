@@ -1,4 +1,5 @@
-package main
+// Package slideshow manages the starting and stopping of the slideshow imv app
+package slideshow
 
 import (
 	"errors"
@@ -237,7 +238,7 @@ func startImvWayland(rootPath string, imgPaths []string, interval int) error {
 
 const defaultTargetMaxDim = 1080
 
-func restartSlideshow(imgPaths []string, interval int) error {
+func RestartSlideshow(imgPaths []string, interval int) error {
 	rootPath := os.Getenv("DPF_ROOT_PATH")
 	if rootPath == "" {
 		return errors.New("DPF_ROOT_PATH environment variable is required")

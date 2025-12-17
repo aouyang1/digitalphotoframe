@@ -340,6 +340,209 @@ function toggleDisplay(btn) {
         });
 }
 
+// Schedule state
+let originalSchedule = null;
+let currentSchedule = null;
+
+function loadSchedule() {
+    fetch('/schedule')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Failed to load schedule');
+            }
+            return response.json();
+        })
+        .then(data => {
+            originalSchedule = {
+                enabled: data.enabled,
+                start: data.start || '00:00',
+                end: data.end || '23:59'
+            };
+            currentSchedule = { ...originalSchedule };
+            applyScheduleToUI(currentSchedule);
+            updateScheduleSaveButton();
+        })
+        .catch(err => {
+            console.error(err);
+            const statusEl = document.getElementById('schedule-status');
+            if (statusEl) {
+                statusEl.textContent = 'Failed to load schedule';
+                statusEl.classList.remove('success');
+                statusEl.classList.add('error');
+                statusEl.style.display = 'inline';
+            }
+        });
+}
+
+function applyScheduleToUI(schedule) {
+    const enabledBtn = document.getElementById('toggle-schedule-enabled');
+    const startInput = document.getElementById('schedule-start');
+    const endInput = document.getElementById('schedule-end');
+
+    if (!enabledBtn || !startInput || !endInput) {
+        return;
+    }
+
+    setToggleButton(enabledBtn, schedule.enabled);
+    
+    // Format time as HH:MM
+    startInput.value = formatTimeInput(schedule.start);
+    endInput.value = formatTimeInput(schedule.end);
+}
+
+function formatTimeInput(time) {
+    if (!time) return '';
+    // Ensure format is HH:MM
+    const parts = time.split(':');
+    if (parts.length === 2) {
+        const hours = parts[0].padStart(2, '0');
+        const minutes = parts[1].padStart(2, '0');
+        return hours + ':' + minutes;
+    }
+    return time;
+}
+
+function onScheduleTimeInput(event, field) {
+    const input = event.target;
+    
+    // Update current schedule
+    if (!currentSchedule) {
+        currentSchedule = { ...originalSchedule };
+    }
+    
+    if (field === 'start') {
+        currentSchedule.start = input.value;
+    } else if (field === 'end') {
+        currentSchedule.end = input.value;
+    }
+    
+    updateScheduleSaveButton();
+}
+
+function onScheduleTimeKeydown(event, field) {
+    // Allow: backspace, delete, tab, escape, enter, and arrow keys
+    if ([8, 9, 27, 13, 46, 37, 38, 39, 40].indexOf(event.keyCode) !== -1 ||
+        // Allow Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X
+        (event.keyCode === 65 && event.ctrlKey === true) ||
+        (event.keyCode === 67 && event.ctrlKey === true) ||
+        (event.keyCode === 86 && event.ctrlKey === true) ||
+        (event.keyCode === 88 && event.ctrlKey === true)) {
+        return;
+    }
+    // Ensure that it is a number and stop the keypress
+    if ((event.shiftKey || (event.keyCode < 48 || event.keyCode > 57)) && (event.keyCode < 96 || event.keyCode > 105)) {
+        event.preventDefault();
+    }
+}
+
+function onScheduleEnabledToggle(btn) {
+    const current = btn.dataset.value === 'true';
+    const next = !current;
+    setToggleButton(btn, next);
+
+    if (!currentSchedule) {
+        currentSchedule = { ...originalSchedule };
+    }
+    currentSchedule.enabled = next;
+    updateScheduleSaveButton();
+}
+
+function updateScheduleSaveButton() {
+    const saveBtn = document.getElementById('schedule-save-btn');
+    if (!saveBtn) return;
+
+    if (!originalSchedule || !currentSchedule) {
+        saveBtn.disabled = true;
+        return;
+    }
+
+    const changed = JSON.stringify(originalSchedule) !== JSON.stringify(currentSchedule);
+    saveBtn.disabled = !changed;
+}
+
+function saveSchedule() {
+    if (!currentSchedule) return;
+
+    const statusEl = document.getElementById('schedule-status');
+    if (statusEl) {
+        statusEl.textContent = 'Saving...';
+        statusEl.classList.remove('error', 'success');
+        statusEl.style.display = 'inline';
+    }
+
+    // Validate time format
+    const timeRegex = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+    if (!timeRegex.test(currentSchedule.start)) {
+        if (statusEl) {
+            statusEl.textContent = 'Invalid start time format (use HH:MM) 00:00 to 23:59';
+            statusEl.classList.remove('success');
+            statusEl.classList.add('error');
+            statusEl.style.display = 'inline';
+        }
+        return;
+    }
+    if (!timeRegex.test(currentSchedule.end)) {
+        if (statusEl) {
+            statusEl.textContent = 'Invalid end time format (use HH:MM) 00:00 to 23:59';
+            statusEl.classList.remove('success');
+            statusEl.classList.add('error');
+            statusEl.style.display = 'inline';
+        }
+        return;
+    }
+
+    const payload = {
+        enabled: !!currentSchedule.enabled,
+        start: currentSchedule.start,
+        end: currentSchedule.end
+    };
+
+    fetch('/schedule', {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+    })
+        .then(response => {
+            if (!response.ok) {
+                return response.json().then(data => {
+                    const msg = data && data.error ? data.error : 'Failed to save schedule';
+                    throw new Error(msg);
+                }).catch(() => {
+                    throw new Error('Failed to save schedule');
+                });
+            }
+            return response.json();
+        })
+        .then(data => {
+            originalSchedule = {
+                enabled: data.enabled,
+                start: data.start,
+                end: data.end
+            };
+            currentSchedule = { ...originalSchedule };
+            applyScheduleToUI(currentSchedule);
+            updateScheduleSaveButton();
+
+            if (statusEl) {
+                statusEl.textContent = 'Saved';
+                statusEl.classList.remove('error');
+                statusEl.classList.add('success');
+                statusEl.style.display = 'inline';
+            }
+        })
+        .catch(err => {
+            console.error(err);
+            if (statusEl) {
+                statusEl.textContent = err.message || 'Failed to save schedule';
+                statusEl.classList.remove('success');
+                statusEl.classList.add('error');
+                statusEl.style.display = 'inline';
+            }
+        });
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     const intervalInput = document.getElementById('interval-value');
     const intervalUnit = document.getElementById('interval-unit');
@@ -353,4 +556,17 @@ document.addEventListener('DOMContentLoaded', function() {
 
     loadSettings();
     loadDisplayState();
+    loadSchedule();
 });
+
+// Load schedule when switching to slideshow view
+// Override switchView to load schedule when slideshow view is activated
+(function() {
+    const originalSwitchView = window.switchView;
+    window.switchView = function(viewName, button) {
+        originalSwitchView(viewName, button);
+        if (viewName === 'slideshow') {
+            loadSchedule();
+        }
+    };
+})();

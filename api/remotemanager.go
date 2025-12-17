@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/aouyang1/digitalphotoframe/api/client"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
@@ -28,7 +29,7 @@ type RemoteManager struct {
 
 	outputPath string
 
-	photoClient *PhotoClient
+	photoClient *client.PhotoClient
 
 	Updated chan bool
 }
@@ -62,18 +63,18 @@ func NewRemoteManager() (*RemoteManager, error) {
 	}
 
 	// Create an Amazon S3 service client
-	client := s3.NewFromConfig(cfg)
+	s3Client := s3.NewFromConfig(cfg)
 
 	// Initialize photo client if web server URL is available
-	var photoClient *PhotoClient
+	var photoClient *client.PhotoClient
 	webServerURL := os.Getenv("DPF_WEBSERVER_URL")
 	if webServerURL == "" {
 		webServerURL = "http://localhost:80"
 	}
-	photoClient = NewPhotoClient(webServerURL)
+	photoClient = client.NewPhotoClient(webServerURL)
 
 	return &RemoteManager{
-		client:      client,
+		client:      s3Client,
 		profile:     awsProfileName,
 		s3Bucket:    s3Bucket,
 		outputPath:  outputPath,

@@ -1,4 +1,5 @@
-package main
+// Package api is the main api web server
+package api
 
 import (
 	"embed"
@@ -11,12 +12,22 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/aouyang1/digitalphotoframe/api/models"
+	"github.com/aouyang1/digitalphotoframe/slideshow"
+	"github.com/aouyang1/digitalphotoframe/store"
 	"github.com/aouyang1/digitalphotoframe/wlrrandr"
+	mapset "github.com/deckarep/golang-set/v2"
 	"github.com/gin-gonic/gin"
+)
+
+var supportedExt = mapset.NewSet(
+	".jpeg", ".jpg", ".JPEG", ".JPG",
+	".png", ".PNG",
 )
 
 //go:embed web/templates/* web/static/**
@@ -24,7 +35,7 @@ var webFiles embed.FS
 
 type WebServer struct {
 	router   *gin.Engine
-	db       *Database
+	db       *store.Database
 	rootPath string
 
 	localManager  *LocalManager
@@ -36,7 +47,7 @@ type WebServer struct {
 	imvMutex sync.Mutex
 }
 
-func NewWebServer(db *Database, rootPath string) *WebServer {
+func NewWebServer(db *store.Database, rootPath string) *WebServer {
 	router := gin.Default()
 
 	ws := &WebServer{
@@ -121,6 +132,8 @@ func (ws *WebServer) setupRoutes() {
 	ws.router.POST("/slideshow/play", ws.handlePlayFromPhoto)
 	ws.router.GET("/settings", ws.handleGetSettings)
 	ws.router.PUT("/settings", ws.handleUpdateSettings)
+	ws.router.GET("/schedule", ws.handleGetSchedule)
+	ws.router.PUT("/schedule", ws.handleUpdateSchedule)
 	ws.router.GET("/display", ws.handleGetDisplay)
 	ws.router.PUT("/display/:state", ws.handleUpdateDisplay)
 }
@@ -135,7 +148,7 @@ func (ws *WebServer) Start(port string) {
 			case <-ws.localManager.Updated:
 				slog.Info("found new updates, restarting slideshow")
 				ws.imvMutex.Lock()
-				imgPaths, err := ws.getImgPaths()
+				imgPaths, err := ws.GetImgPaths()
 				if err != nil {
 					slog.Error("error while getting image paths", "error", err)
 					ws.imvMutex.Unlock()
@@ -147,7 +160,7 @@ func (ws *WebServer) Start(port string) {
 					ws.imvMutex.Unlock()
 					continue
 				}
-				if err := restartSlideshow(imgPaths, settings.SlideshowIntervalSeconds); err != nil {
+				if err := slideshow.RestartSlideshow(imgPaths, settings.SlideshowIntervalSeconds); err != nil {
 					slog.Error("error while restarting slideshow from update", "error", err)
 				}
 				ws.imvMutex.Unlock()
@@ -164,7 +177,7 @@ func (ws *WebServer) Start(port string) {
 	}
 }
 
-func (ws *WebServer) getAllImages() ([]Photo, error) {
+func (ws *WebServer) getAllImages() ([]store.Photo, error) {
 	allPhotos, err := ws.db.GetAllPhotos(0)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get all photos for surprise category: %v", err)
@@ -178,7 +191,7 @@ func (ws *WebServer) getAllImages() ([]Photo, error) {
 	return allPhotos, nil
 }
 
-func (ws *WebServer) getImgPaths() ([]string, error) {
+func (ws *WebServer) GetImgPaths() ([]string, error) {
 	allPhotos, err := ws.getAllImages()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get all images: %v", err)
@@ -192,7 +205,7 @@ func (ws *WebServer) getImgPaths() ([]string, error) {
 
 // buildImgPathFromPhoto constructs the filesystem path to the rotated (_IMGP) image
 // corresponding to a Photo record, based on its category and the web server rootPath.
-func (ws *WebServer) buildImgPathFromPhoto(photo Photo) string {
+func (ws *WebServer) buildImgPathFromPhoto(photo store.Photo) string {
 	baseName := strings.TrimSuffix(photo.PhotoName, filepath.Ext(photo.PhotoName))
 	rotatedName := baseName + "_IMGP" + filepath.Ext(photo.PhotoName)
 
@@ -218,7 +231,7 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 			c.String(http.StatusBadRequest, "Error: No file provided")
 			return
 		}
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "No file provided"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "No file provided"})
 		return
 	}
 
@@ -230,7 +243,7 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 			c.String(http.StatusBadRequest, "Error: "+errorMsg)
 			return
 		}
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: errorMsg})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: errorMsg})
 		return
 	}
 
@@ -242,7 +255,7 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 			c.String(http.StatusInternalServerError, "Error: "+errorMsg)
 			return
 		}
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: errorMsg})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: errorMsg})
 		return
 	}
 	if exists {
@@ -251,7 +264,7 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 			c.String(http.StatusConflict, "Error: "+errorMsg)
 			return
 		}
-		c.JSON(http.StatusConflict, ErrorResponse{Error: errorMsg})
+		c.JSON(http.StatusConflict, models.ErrorResponse{Error: errorMsg})
 		return
 	}
 
@@ -263,7 +276,7 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 			c.String(http.StatusInternalServerError, "Error: "+errorMsg)
 			return
 		}
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: errorMsg})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: errorMsg})
 		return
 	}
 
@@ -275,7 +288,7 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 			c.String(http.StatusInternalServerError, "Error: "+errorMsg)
 			return
 		}
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: errorMsg})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: errorMsg})
 		return
 	}
 
@@ -289,7 +302,7 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 			c.String(http.StatusInternalServerError, "Error: "+errorMsg)
 			return
 		}
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: errorMsg})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: errorMsg})
 		return
 	}
 
@@ -302,7 +315,7 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 			c.String(http.StatusInternalServerError, "Error: "+errorMsg)
 			return
 		}
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: errorMsg})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: errorMsg})
 		return
 	}
 
@@ -323,7 +336,7 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, UploadResponse{
+	c.JSON(http.StatusOK, models.UploadResponse{
 		PhotoName: file.Filename,
 		Category:  1,
 		Order:     maxOrder,
@@ -336,26 +349,26 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 
 func (ws *WebServer) handleRegisterPhoto(c *gin.Context) {
 	// Parse request body
-	var req RegisterPhotoRequest
+	var req models.RegisterPhotoRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: fmt.Sprintf("Invalid request body: %v", err)})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: fmt.Sprintf("Invalid request body: %v", err)})
 		return
 	}
 
 	if req.PhotoName == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "photo_name is required"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "photo_name is required"})
 		return
 	}
 
 	if req.Category != 0 && req.Category != 1 {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "category must be 0 (surprise) or 1 (original)"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "category must be 0 (surprise) or 1 (original)"})
 		return
 	}
 
 	// Validate file extension
 	ext := filepath.Ext(req.PhotoName)
 	if !supportedExt.Contains(ext) {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Error: fmt.Sprintf("Unsupported file extension: %s. Supported: .jpeg, .jpg, .png", ext),
 		})
 		return
@@ -367,18 +380,18 @@ func (ws *WebServer) handleRegisterPhoto(c *gin.Context) {
 		filePath = filepath.Join(ws.rootPath, "original/surprise", req.PhotoName)
 	}
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		c.JSON(http.StatusNotFound, ErrorResponse{Error: fmt.Sprintf("Photo file does not exist: %s", req.PhotoName)})
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Error: fmt.Sprintf("Photo file does not exist: %s", req.PhotoName)})
 		return
 	}
 
 	// Check for duplicates in database
 	exists, err := ws.db.PhotoExists(req.PhotoName, req.Category)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
 		return
 	}
 	if exists {
-		c.JSON(http.StatusOK, RegisterPhotoResponse{
+		c.JSON(http.StatusOK, models.RegisterPhotoResponse{
 			PhotoName: req.PhotoName,
 			Category:  req.Category,
 			Order:     -1,
@@ -390,17 +403,17 @@ func (ws *WebServer) handleRegisterPhoto(c *gin.Context) {
 	// Get max order for the category
 	maxOrder, err := ws.db.GetMaxOrder(req.Category)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
 		return
 	}
 
 	// Insert into database
 	if err := ws.db.InsertPhoto(req.PhotoName, req.Category, maxOrder); err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to insert photo into database: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to insert photo into database: %v", err)})
 		return
 	}
 
-	c.JSON(http.StatusOK, RegisterPhotoResponse{
+	c.JSON(http.StatusOK, models.RegisterPhotoResponse{
 		PhotoName: req.PhotoName,
 		Category:  req.Category,
 		Order:     maxOrder,
@@ -416,26 +429,26 @@ func (ws *WebServer) handleListPhotos(c *gin.Context) {
 
 	category, err := strconv.Atoi(categoryStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid category parameter"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Invalid category parameter"})
 		return
 	}
 
 	page, err := strconv.Atoi(pageStr)
 	if err != nil || page < 1 {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid page parameter"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Invalid page parameter"})
 		return
 	}
 
 	limit, err := strconv.Atoi(limitStr)
 	if err != nil || limit < 1 {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid limit parameter"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Invalid limit parameter"})
 		return
 	}
 
 	// Get total count
 	total, err := ws.db.GetPhotoCount(category)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
 		return
 	}
 
@@ -445,11 +458,11 @@ func (ws *WebServer) handleListPhotos(c *gin.Context) {
 	// Get photos
 	photos, err := ws.db.GetPhotos(category, limit, offset)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
 		return
 	}
 
-	c.JSON(http.StatusOK, PhotoListResponse{
+	c.JSON(http.StatusOK, models.PhotoListResponse{
 		Photos: photos,
 		Total:  total,
 		Page:   page,
@@ -460,43 +473,43 @@ func (ws *WebServer) handleListPhotos(c *gin.Context) {
 func (ws *WebServer) handleDeletePhoto(c *gin.Context) {
 	name := c.Param("name")
 	if name == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Photo name is required"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Photo name is required"})
 		return
 	}
 
 	category := c.Param("category")
 	if category == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Category is required"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Category is required"})
 		return
 	}
 
 	categoryInt, err := strconv.Atoi(category)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid category parameter"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Invalid category parameter"})
 		return
 	}
 
 	// Check if photo exists in database
 	exists, err := ws.db.PhotoExists(name, categoryInt)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
 		return
 	}
 	if !exists {
-		c.JSON(http.StatusNotFound, ErrorResponse{Error: fmt.Sprintf("Photo '%s' not found", name)})
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Error: fmt.Sprintf("Photo '%s' not found", name)})
 		return
 	}
 
 	// Delete file from filesystem
 	filePath := filepath.Join(ws.rootPath, "original", name)
 	if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to delete file: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to delete file: %v", err)})
 		return
 	}
 
 	// Delete from database
 	if err := ws.db.DeletePhoto(name, categoryInt); err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to delete photo from database: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to delete photo from database: %v", err)})
 		return
 	}
 
@@ -506,50 +519,50 @@ func (ws *WebServer) handleDeletePhoto(c *gin.Context) {
 func (ws *WebServer) handleReorderPhoto(c *gin.Context) {
 	name := c.Param("name")
 	if name == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Photo name is required"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Photo name is required"})
 		return
 	}
 
 	category := c.Param("category")
 	if category == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Category is required"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Category is required"})
 		return
 	}
 
 	categoryInt, err := strconv.Atoi(category)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid category parameter"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Invalid category parameter"})
 		return
 	}
 
 	// Parse request body
-	var req ReorderRequest
+	var req models.ReorderRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: fmt.Sprintf("Invalid request body: %v", err)})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: fmt.Sprintf("Invalid request body: %v", err)})
 		return
 	}
 
 	if req.NewOrder < 0 {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "new_order must be non-negative"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "new_order must be non-negative"})
 		return
 	}
 
 	// Get photo to determine category
 	photo, err := ws.db.GetPhoto(name, categoryInt)
 	if err != nil {
-		c.JSON(http.StatusNotFound, ErrorResponse{Error: fmt.Sprintf("Photo '%s' not found", name)})
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Error: fmt.Sprintf("Photo '%s' not found", name)})
 		return
 	}
 
 	// Get max order to validate new_order
 	maxOrder, err := ws.db.GetMaxOrder(categoryInt)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
 		return
 	}
 
 	if req.NewOrder >= maxOrder {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Error: fmt.Sprintf("new_order %d exceeds maximum order %d for category %d", req.NewOrder, maxOrder-1, photo.Category),
 		})
 		return
@@ -557,14 +570,14 @@ func (ws *WebServer) handleReorderPhoto(c *gin.Context) {
 
 	// Update order
 	if err := ws.db.UpdatePhotoOrder(name, req.NewOrder, categoryInt); err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to update photo order: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to update photo order: %v", err)})
 		return
 	}
 
 	// Get updated photo
 	updatedPhoto, err := ws.db.GetPhoto(name, categoryInt)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to retrieve updated photo: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to retrieve updated photo: %v", err)})
 		return
 	}
 
@@ -574,55 +587,45 @@ func (ws *WebServer) handleReorderPhoto(c *gin.Context) {
 func (ws *WebServer) handleGetSettings(c *gin.Context) {
 	settings, err := ws.db.GetAppSettings()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to get settings: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to get settings: %v", err)})
 		return
 	}
 
-	resp := SettingsResponse{
-		SlideshowIntervalSeconds: settings.SlideshowIntervalSeconds,
-		IncludeSurprise:          settings.IncludeSurprise,
-		ShuffleEnabled:           settings.ShuffleEnabled,
-	}
-
-	c.JSON(http.StatusOK, resp)
+	c.JSON(http.StatusOK, settings)
 }
 
 func (ws *WebServer) handleUpdateSettings(c *gin.Context) {
-	var req UpdateSettingsRequest
+	var req store.AppSettings
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: fmt.Sprintf("Invalid request body: %v", err)})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: fmt.Sprintf("Invalid request body: %v", err)})
 		return
 	}
 
 	if req.SlideshowIntervalSeconds <= 0 {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "slideshow_interval_seconds must be positive"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "slideshow_interval_seconds must be positive"})
 		return
 	}
 
-	newSettings := &AppSettings{
-		SlideshowIntervalSeconds: req.SlideshowIntervalSeconds,
-		IncludeSurprise:          req.IncludeSurprise,
-		ShuffleEnabled:           req.ShuffleEnabled,
-	}
+	newSettings := &req
 
 	if err := ws.db.UpsertAppSettings(newSettings); err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to update settings: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to update settings: %v", err)})
 		return
 	}
 
 	// After updating settings, restart the slideshow with the new configuration.
-	var imgPhotos []Photo
+	var imgPhotos []store.Photo
 	if newSettings.IncludeSurprise {
 		allPhotos, err := ws.getAllImages()
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to get photos for restart: %v", err)})
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to get photos for restart: %v", err)})
 			return
 		}
 		imgPhotos = allPhotos
 	} else {
 		photos, err := ws.db.GetAllPhotos(1)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to get photos for restart: %v", err)})
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to get photos for restart: %v", err)})
 			return
 		}
 		imgPhotos = photos
@@ -641,41 +644,77 @@ func (ws *WebServer) handleUpdateSettings(c *gin.Context) {
 
 	ws.imvMutex.Lock()
 	defer ws.imvMutex.Unlock()
-	if err := restartSlideshow(imgPaths, newSettings.SlideshowIntervalSeconds); err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to restart slideshow: %v", err)})
+	if err := slideshow.RestartSlideshow(imgPaths, newSettings.SlideshowIntervalSeconds); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to restart slideshow: %v", err)})
 		return
 	}
 
-	resp := SettingsResponse{
-		SlideshowIntervalSeconds: newSettings.SlideshowIntervalSeconds,
-		IncludeSurprise:          newSettings.IncludeSurprise,
-		ShuffleEnabled:           newSettings.ShuffleEnabled,
+	c.JSON(http.StatusOK, newSettings)
+}
+
+func (ws *WebServer) handleGetSchedule(c *gin.Context) {
+	schedule, err := ws.db.GetSchedule()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to get settings: %v", err)})
+		return
+	}
+	c.JSON(http.StatusOK, schedule)
+}
+
+var validScheduleTime = regexp.MustCompile(`^(?:[01]\d|2[0-3]):[0-5]\d$`)
+
+func (ws *WebServer) handleUpdateSchedule(c *gin.Context) {
+	var req store.Schedule
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: fmt.Sprintf("Invalid request body: %v", err)})
+		return
 	}
 
-	c.JSON(http.StatusOK, resp)
+	if !validScheduleTime.MatchString(req.Start) {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: fmt.Sprintf("Invalid start time format: need 23:15, got %s", req.Start)})
+		return
+	}
+
+	if !validScheduleTime.MatchString(req.End) {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: fmt.Sprintf("Invalid end time format: need 23:15, got %s", req.End)})
+		return
+	}
+
+	newSchedule := &store.Schedule{
+		Enabled: req.Enabled,
+		Start:   req.Start,
+		End:     req.End,
+	}
+
+	if err := ws.db.UpsertSchedule(newSchedule); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to update schedule: %v", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, newSchedule)
 }
 
 func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
-	var req PlayFromPhotoRequest
+	var req models.PlayFromPhotoRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: fmt.Sprintf("Invalid request body: %v", err)})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: fmt.Sprintf("Invalid request body: %v", err)})
 		return
 	}
 
 	if req.PhotoName == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "photo_name is required"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "photo_name is required"})
 		return
 	}
 
 	if req.Category != 0 && req.Category != 1 {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "category must be 0 (surprise) or 1 (original)"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "category must be 0 (surprise) or 1 (original)"})
 		return
 	}
 
 	// Optional: validate extension similar to upload/register handlers
 	ext := filepath.Ext(req.PhotoName)
 	if ext == "" || !supportedExt.Contains(ext) {
-		c.JSON(http.StatusBadRequest, ErrorResponse{
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Error: fmt.Sprintf("Unsupported or missing file extension: %s. Supported: .jpeg, .jpg, .png", ext),
 		})
 		return
@@ -684,11 +723,11 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 	// Ensure the photo exists in the database
 	exists, err := ws.db.PhotoExists(req.PhotoName, req.Category)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
 		return
 	}
 	if !exists {
-		c.JSON(http.StatusNotFound, ErrorResponse{
+		c.JSON(http.StatusNotFound, models.ErrorResponse{
 			Error: fmt.Sprintf("Photo '%s' in category %d not found", req.PhotoName, req.Category),
 		})
 		return
@@ -697,11 +736,11 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 	// Fetch all photos in the required order: category 0 then category 1
 	allPhotos, err := ws.getAllImages()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to get image paths: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to get image paths: %v", err)})
 		return
 	}
 	if len(allPhotos) == 0 {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "No photos available to start slideshow"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "No photos available to start slideshow"})
 		return
 	}
 
@@ -717,7 +756,7 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 
 	if startIdx == -1 {
 		// Defensive: DB changed between existence check and fetch
-		c.JSON(http.StatusNotFound, ErrorResponse{
+		c.JSON(http.StatusNotFound, models.ErrorResponse{
 			Error: fmt.Sprintf("Photo '%s' in category %d not found in current playlist", req.PhotoName, req.Category),
 		})
 		return
@@ -734,9 +773,9 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 	interval := req.Interval
 	ws.imvMutex.Lock()
 	defer ws.imvMutex.Unlock()
-	// Let restartSlideshow handle defaulting when interval <= 0
-	if err := restartSlideshow(ordered, interval); err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{
+	// Let slideshow.RestartSlideshow handle defaulting when interval <= 0
+	if err := slideshow.RestartSlideshow(ordered, interval); err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
 			Error: fmt.Sprintf("Failed to restart slideshow: %v", err),
 		})
 		return
@@ -753,23 +792,23 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 func (ws *WebServer) handleGetDisplay(c *gin.Context) {
 	enabled, err := wlrrandr.GetDisplayEnabled()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to get display state: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to get display state: %v", err)})
 		return
 	}
 
-	c.JSON(http.StatusOK, DisplayStateResponse{Enabled: enabled})
+	c.JSON(http.StatusOK, models.DisplayStateResponse{Enabled: enabled})
 }
 
 func (ws *WebServer) handleUpdateDisplay(c *gin.Context) {
 	state := c.Param("state")
 	if state != "0" && state != "1" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "state must be 0 (off) or 1 (on)"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "state must be 0 (off) or 1 (on)"})
 		return
 	}
 
 	desiredEnabled := state == "1"
 	if err := wlrrandr.UpdateDisplayEnabled(desiredEnabled); err != nil {
-		c.JSON(http.StatusInternalServerError, ErrorResponse{Error: fmt.Sprintf("Failed to update display state: %v", err)})
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to update display state: %v", err)})
 		return
 	}
 
@@ -780,7 +819,7 @@ func (ws *WebServer) handleUpdateDisplay(c *gin.Context) {
 		enabled = desiredEnabled
 	}
 
-	c.JSON(http.StatusOK, DisplayStateResponse{Enabled: enabled})
+	c.JSON(http.StatusOK, models.DisplayStateResponse{Enabled: enabled})
 }
 
 func (ws *WebServer) handlePhotoImage(c *gin.Context) {
@@ -788,20 +827,20 @@ func (ws *WebServer) handlePhotoImage(c *gin.Context) {
 	encodedName := c.Param("name")
 
 	if encodedName == "" {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Photo name is required"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Photo name is required"})
 		return
 	}
 
 	// Decode the photo name
 	name, err := url.PathUnescape(encodedName)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid photo name encoding"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Invalid photo name encoding"})
 		return
 	}
 
 	category, err := strconv.Atoi(categoryStr)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, ErrorResponse{Error: "Invalid category parameter"})
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Invalid category parameter"})
 		return
 	}
 
@@ -815,7 +854,7 @@ func (ws *WebServer) handlePhotoImage(c *gin.Context) {
 
 	// Check if file exists
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		c.JSON(http.StatusNotFound, ErrorResponse{Error: fmt.Sprintf("Photo file not found: %s", name)})
+		c.JSON(http.StatusNotFound, models.ErrorResponse{Error: fmt.Sprintf("Photo file not found: %s", name)})
 		return
 	}
 
@@ -842,7 +881,7 @@ func (ws *WebServer) handleUIPhotos(c *gin.Context) {
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
 }
 
-func (ws *WebServer) generateUIPhotosHTML(photos []Photo, category int) string {
+func (ws *WebServer) generateUIPhotosHTML(photos []store.Photo, category int) string {
 	html := "<div class=\"photo-row\">\n"
 	for _, photo := range photos {
 		encodedName := url.PathEscape(photo.PhotoName)

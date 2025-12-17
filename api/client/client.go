@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"bytes"
@@ -11,6 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/aouyang1/digitalphotoframe/api/models"
+	"github.com/aouyang1/digitalphotoframe/store"
 )
 
 type PhotoClient struct {
@@ -34,7 +37,7 @@ func (pc *PhotoClient) RegisterPhoto(photoPath string, category int) error {
 		return fmt.Errorf("photo file does not exist: %s", photoPath)
 	}
 
-	reqBody := RegisterPhotoRequest{
+	reqBody := models.RegisterPhotoRequest{
 		PhotoName: photoName,
 		Category:  category,
 	}
@@ -64,14 +67,14 @@ func (pc *PhotoClient) RegisterPhoto(photoPath string, category int) error {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		var errResp ErrorResponse
+		var errResp models.ErrorResponse
 		if err := json.Unmarshal(body, &errResp); err == nil {
 			return fmt.Errorf("server error: %s", errResp.Error)
 		}
 		return fmt.Errorf("server returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	var registerResp RegisterPhotoResponse
+	var registerResp models.RegisterPhotoResponse
 	if err := json.Unmarshal(body, &registerResp); err != nil {
 		return fmt.Errorf("failed to parse response: %w", err)
 	}
@@ -95,9 +98,9 @@ func (pc *PhotoClient) RegisterPhotoIfNotExists(photoPath string, category int) 
 }
 
 // GetPhotos retrieves all photos for a given category from the database
-func (pc *PhotoClient) GetPhotos(category int) ([]Photo, error) {
+func (pc *PhotoClient) GetPhotos(category int) ([]store.Photo, error) {
 	// Fetch all photos by using a large limit and paginating if needed
-	var allPhotos []Photo
+	var allPhotos []store.Photo
 	page := 1
 	limit := 100
 
@@ -120,14 +123,14 @@ func (pc *PhotoClient) GetPhotos(category int) ([]Photo, error) {
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			var errResp ErrorResponse
+			var errResp models.ErrorResponse
 			if err := json.Unmarshal(body, &errResp); err == nil {
 				return nil, fmt.Errorf("server error: %s", errResp.Error)
 			}
 			return nil, fmt.Errorf("server returned status %d: %s", resp.StatusCode, string(body))
 		}
 
-		var listResp PhotoListResponse
+		var listResp models.PhotoListResponse
 		if err := json.Unmarshal(body, &listResp); err != nil {
 			return nil, fmt.Errorf("failed to parse response: %w", err)
 		}
@@ -166,7 +169,7 @@ func (pc *PhotoClient) DeletePhoto(name string, category int) error {
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
-		var errResp ErrorResponse
+		var errResp models.ErrorResponse
 		if err := json.Unmarshal(body, &errResp); err == nil {
 			return fmt.Errorf("server error: %s", errResp.Error)
 		}

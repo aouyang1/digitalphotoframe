@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"log/slog"
@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/aouyang1/digitalphotoframe/api/client"
 	mapset "github.com/deckarep/golang-set/v2"
 )
 
@@ -18,7 +19,7 @@ const (
 type LocalManager struct {
 	path string
 
-	photoClient  *PhotoClient
+	photoClient  *client.PhotoClient
 	trackedFiles mapset.Set[string]
 
 	Updated chan bool
@@ -39,7 +40,7 @@ func NewLocalManager() (*LocalManager, error) {
 	if webServerURL == "" {
 		webServerURL = "http://localhost:80"
 	}
-	photoClient := NewPhotoClient(webServerURL)
+	photoClient := client.NewPhotoClient(webServerURL)
 
 	l := &LocalManager{
 		path:         path,

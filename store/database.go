@@ -1,4 +1,5 @@
-package main
+// Package store database for photo metadata, settings, and schedule
+package store
 
 import (
 	"database/sql"
@@ -12,18 +13,6 @@ import (
 
 type Database struct {
 	db *sql.DB
-}
-
-type Photo struct {
-	PhotoName string `json:"photo_name"`
-	Category  int    `json:"category"`
-	Order     int    `json:"order"`
-}
-
-type AppSettings struct {
-	SlideshowIntervalSeconds int  `json:"slideshow_interval_seconds"`
-	IncludeSurprise          bool `json:"include_surprise"`
-	ShuffleEnabled           bool `json:"shuffle_enabled"`
 }
 
 func NewDatabase(dbPath string) (*Database, error) {
@@ -66,6 +55,13 @@ func (d *Database) createTable() error {
 		slideshow_interval_seconds INTEGER NOT NULL,
 		include_surprise           INTEGER NOT NULL,
 		shuffle_enabled            INTEGER NOT NULL,
+		PRIMARY KEY (singleton)
+	);
+	CREATE TABLE IF NOT EXISTS schedule (
+		singleton INTEGER NOT NULL DEFAULT 1 CHECK (singleton = 1),
+		enabled INTEGER NOT NULL,
+		start   TEXT NOT NULL,
+		end     TEXT NOT NULL,
 		PRIMARY KEY (singleton)
 	);
 	`
@@ -322,6 +318,69 @@ func (d *Database) UpsertAppSettings(s *AppSettings) error {
 	)
 	if err != nil {
 		return fmt.Errorf("upsert app settings: %w", err)
+	}
+	return nil
+}
+
+func (d *Database) GetSchedule() (*Schedule, error) {
+	const query = `
+		SELECT enabled,
+		       start,
+		       end
+		FROM schedule 
+		WHERE singleton = 1
+	`
+
+	var enabled bool
+	var start, end string
+
+	err := d.db.QueryRow(query).Scan(&enabled, &start, &end)
+	if err == sql.ErrNoRows {
+		// Bootstrap defaults if no settings row exists yet
+		defaults := &Schedule{
+			Enabled: true,
+			Start:   "06:00",
+			End:     "23:00",
+		}
+		if err := d.UpsertSchedule(defaults); err != nil {
+			return nil, err
+		}
+		return defaults, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get schedule: %w", err)
+	}
+
+	schedule := &Schedule{
+		Enabled: enabled,
+		Start:   start,
+		End:     end,
+	}
+	return schedule, nil
+}
+
+func (d *Database) UpsertSchedule(s *Schedule) error {
+	const stmt = `
+		INSERT INTO schedule (
+			singleton,
+			enabled,
+			start,
+			end
+		) VALUES (1, ?, ?, ?)
+		ON CONFLICT(singleton) DO UPDATE SET
+			enabled = excluded.enabled,
+			start   = excluded.start,
+			end     = excluded.end
+	`
+
+	_, err := d.db.Exec(
+		stmt,
+		boolToInt(s.Enabled),
+		s.Start,
+		s.End,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert schedule: %w", err)
 	}
 	return nil
 }

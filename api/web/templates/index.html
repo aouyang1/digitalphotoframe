@@ -72,7 +72,7 @@
                 <div class="category-section">
                     <h2 class="category-title">Slideshow</h2>
                     <div class="settings-row" style="margin-top: 16px; justify-content: flex-start; gap: 12px;">
-                        <span>Display On</span>
+                        <span>Display On/Off</span>
                         <button
                             type="button"
                             id="toggle-display"
@@ -82,6 +82,52 @@
                             <span class="toggle-label-on"></span>
                             <span class="toggle-label-off"></span>
                         </button>
+                    </div>
+                    
+                    <div id="schedule-section" style="margin-top: 24px;">
+                        <div class="settings-row" style="justify-content: flex-start; gap: 12px; margin-bottom: 16px;">
+                            <span>Schedule On/Off</span>
+                            <button
+                                type="button"
+                                id="toggle-schedule-enabled"
+                                class="toggle-button toggle-off"
+                                data-value="false"
+                                onclick="onScheduleEnabledToggle(this)">
+                                <span class="toggle-label-on"></span>
+                                <span class="toggle-label-off"></span>
+                            </button>
+                        </div>
+                        
+                        <div class="schedule-time-row" style="display: flex; align-items: center; gap: 16px; margin-bottom: 12px;">
+                            <label for="schedule-start" style="font-size: 14px; color: #333; min-width: 60px;">Start:</label>
+                            <div class="time-input-wrapper">
+                                <input type="text" 
+                                       id="schedule-start" 
+                                       class="time-input" 
+                                       placeholder="HH:MM"
+                                       maxlength="5"
+                                       oninput="onScheduleTimeInput(event, 'start')"
+                                       onkeydown="onScheduleTimeKeydown(event, 'start')">
+                            </div>
+                        </div>
+                        
+                        <div class="schedule-time-row" style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
+                            <label for="schedule-end" style="font-size: 14px; color: #333; min-width: 60px;">End:</label>
+                            <div class="time-input-wrapper">
+                                <input type="text" 
+                                       id="schedule-end" 
+                                       class="time-input" 
+                                       placeholder="HH:MM"
+                                       maxlength="5"
+                                       oninput="onScheduleTimeInput(event, 'end')"
+                                       onkeydown="onScheduleTimeKeydown(event, 'end')">
+                            </div>
+                        </div>
+                        
+                        <div class="settings-actions">
+                            <button type="button" id="schedule-save-btn" class="settings-save-btn" disabled onclick="saveSchedule()">Save</button>
+                            <span id="schedule-status" class="upload-status" style="display:none;"></span>
+                        </div>
                     </div>
                 </div>
             </div>
