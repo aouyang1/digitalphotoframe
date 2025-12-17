@@ -98,7 +98,7 @@ func rotateImages(rootPath string, targetMaxDim int) error {
 			// check if already rotated into photos directory
 			alreadyRotated := false
 			for _, photoEntry := range photosEntries {
-				if strings.HasPrefix(photoEntry.Name(), name) {
+				if strings.HasPrefix(photoEntry.Name(), strings.Trim(name, filepath.Ext(name))) {
 					alreadyRotated = true
 					break
 				}
@@ -164,6 +164,44 @@ func rotateImages(rootPath string, targetMaxDim int) error {
 			if err := cmd.Run(); err != nil {
 				slog.Warn("failed to rotate image", "name", imgpName, "error", err)
 			}
+		}
+	}
+
+	// clean up any rotated images in final output if they are not present in original
+	for i, dir := range photosDirs {
+		// Check if directory exists and has files
+		photosEntries, err := os.ReadDir(dir)
+		if err != nil {
+			slog.Debug("directory does not exist or is empty, skipping rotation", "dir", dir)
+			continue
+		}
+
+		entries, err := os.ReadDir(dirs[i])
+		if err != nil {
+			slog.Debug("photos directory does not exist or is empty, skipping rotation", "dir", dir)
+			continue
+		}
+
+		for _, photoEntry := range photosEntries {
+			if photoEntry.IsDir() {
+				continue
+			}
+			photoName := photoEntry.Name()
+
+			// check if final file is not present in original
+			found := false
+			for _, entry := range entries {
+				if strings.HasPrefix(photoName, strings.Trim(entry.Name(), filepath.Ext(entry.Name()))) {
+					found = true
+					break
+				}
+			}
+			if found {
+				continue
+			}
+
+			// delete orphaned image
+			os.Remove(filepath.Join(dir, photoName))
 		}
 	}
 

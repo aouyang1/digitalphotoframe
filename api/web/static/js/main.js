@@ -420,7 +420,7 @@ function onScheduleTimeInput(event, field) {
 }
 
 function onScheduleTimeKeydown(event, field) {
-    // Allow: backspace, delete, tab, escape, enter, and arrow keys
+    // Allow: backspace, delete, tab, escape, enter, :, and arrow keys
     if ([8, 9, 27, 13, 46, 37, 38, 39, 40].indexOf(event.keyCode) !== -1 ||
         // Allow Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X
         (event.keyCode === 65 && event.ctrlKey === true) ||

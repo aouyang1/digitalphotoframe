@@ -33,8 +33,9 @@ type WebServer struct {
 	db       *store.Database
 	rootPath string
 
-	localManager  *LocalManager
-	remoteManager *RemoteManager
+	localManager    *LocalManager
+	remoteManager   *RemoteManager
+	scheduleManager *ScheduleManager
 
 	Updated chan bool
 
@@ -60,8 +61,13 @@ func NewWebServer(db *store.Database, rootPath string) *WebServer {
 	if err != nil {
 		log.Fatalf("Failed to initialize remote manager: %v", err)
 	}
+	scheduleManager, err := NewScheduleManager(db)
+	if err != nil {
+		log.Fatalf("Failed to initialize schedule manager: %v", err)
+	}
 	ws.localManager = localManager
 	ws.remoteManager = remoteManager
+	ws.scheduleManager = scheduleManager
 
 	// Setup routes
 	ws.setupRoutes()
@@ -165,6 +171,7 @@ func (ws *WebServer) Start(port string) {
 
 	go ws.localManager.Run()
 	go ws.remoteManager.Run()
+	go ws.scheduleManager.Run()
 
 	log.Printf("Starting web server on port %s", port)
 	if err := ws.router.Run(port); err != nil {
