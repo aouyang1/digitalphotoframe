@@ -193,6 +193,10 @@ func (ws *WebServer) getAllImages() ([]store.Photo, error) {
 	return allPhotos, nil
 }
 
+func (ws *WebServer) GetAppSettings() (*store.AppSettings, error) {
+	return ws.db.GetAppSettings()
+}
+
 func (ws *WebServer) GetImgPaths() ([]string, error) {
 	allPhotos, err := ws.getAllImages()
 	if err != nil {

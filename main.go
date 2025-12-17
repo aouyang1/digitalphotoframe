@@ -2,9 +2,9 @@ package main
 
 import (
 	"log"
-	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/aouyang1/digitalphotoframe/api"
 	"github.com/aouyang1/digitalphotoframe/slideshow"
@@ -29,15 +29,23 @@ func main() {
 	// Initialize and start web server
 	webServer := api.NewWebServer(database, rootPath)
 
+	// wait for graphics to load up. maybe there's something we can check on the pi to ensure
+	// the graphics hardware is ready before starting imv
+	time.Sleep(5 * time.Second)
+
 	// Start slideshow
 	imgPaths, err := webServer.GetImgPaths()
 	if err != nil {
 		log.Fatalf("Failed to get image paths: %v", err)
 	}
 
-	interval := 15
-	if err := slideshow.RestartSlideshow(imgPaths, interval); err != nil {
-		slog.Error("Failed to start slideshow on initialization, continuing", "error", err)
+	settings, err := webServer.GetAppSettings()
+	if err != nil {
+		log.Fatalf("error while getting settings, %v", err)
+	}
+
+	if err := slideshow.RestartSlideshow(imgPaths, settings.SlideshowIntervalSeconds); err != nil {
+		log.Fatalf("Failed to start slideshow on initialization, %v", err)
 	}
 
 	webServer.Start("0.0.0.0:80")

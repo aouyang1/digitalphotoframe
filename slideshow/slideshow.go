@@ -295,9 +295,16 @@ func startImvWayland(rootPath string, imgPaths []string, interval int) error {
 	}
 
 	cmd := exec.Command("/usr/bin/imv-wayland", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start imv-wayland: %w", err)
 	}
+
+	go func() {
+		err := cmd.Wait()
+		slog.Info("imv-wayland quit", "error", err)
+	}()
 
 	slog.Info("started imv-wayland slideshow")
 	return nil
