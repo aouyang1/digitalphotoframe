@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -45,7 +46,7 @@ func main() {
 	}
 
 	if err := slideshow.RestartSlideshow(imgPaths, settings.SlideshowIntervalSeconds); err != nil {
-		log.Fatalf("Failed to start slideshow on initialization, %v", err)
+		slog.Warn("Failed to start slideshow on initialization, continuing", "error", err)
 	}
 
 	webServer.Start("0.0.0.0:80")

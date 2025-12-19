@@ -20,7 +20,7 @@ import (
 	mapset "github.com/deckarep/golang-set/v2"
 )
 
-const remoteCheckInterval = time.Duration(1 * time.Hour)
+const remoteCheckInterval = time.Duration(24 * time.Hour)
 
 type RemoteManager struct {
 	client *s3.Client
