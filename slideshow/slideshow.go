@@ -147,22 +147,17 @@ func rotateImages(rootPath string, targetMaxDim int) error {
 
 		// downsize and then rotate
 		for rOpt := range slices.Values(imageRotOptions) {
-			args := append([]string{"-x", strconv.Itoa(rOpt.scale) + "%"}, rOpt.name)
+			args := append([]string{"-w", "-x", strconv.Itoa(rOpt.scale) + "%"}, rOpt.name)
 			cmd := exec.Command("imgp", args...)
 			if err := cmd.Run(); err != nil {
 				slog.Warn("failed to downsize image", "name", rOpt.name, "error", err)
 				continue
 			}
 
-			ext := filepath.Ext(rOpt.name)
-			baseName := filepath.Base(rOpt.name)
-			baseName = strings.TrimSuffix(baseName, ext)
-			imgpName := filepath.Join(filepath.Dir(rOpt.name), baseName+"_IMGP"+ext)
-
-			args = append([]string{"-o", strconv.Itoa(rOpt.degrees), "-w", "-i"}, imgpName)
+			args = append([]string{"-o", strconv.Itoa(rOpt.degrees)}, rOpt.name)
 			cmd = exec.Command("imgp", args...)
 			if err := cmd.Run(); err != nil {
-				slog.Warn("failed to rotate image", "name", imgpName, "error", err)
+				slog.Warn("failed to rotate image", "name", rOpt.name, "error", err)
 			}
 		}
 	}
