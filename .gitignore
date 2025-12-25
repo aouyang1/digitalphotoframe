@@ -38,3 +38,4 @@ go.work.sum
 *.PNG
 
 dpf
+.DS_Store

@@ -420,18 +420,56 @@ function onScheduleTimeInput(event, field) {
 }
 
 function onScheduleTimeKeydown(event, field) {
-    // Allow: backspace, delete, tab, escape, enter, :, and arrow keys
-    if ([8, 9, 27, 13, 46, 37, 38, 39, 40].indexOf(event.keyCode) !== -1 ||
-        // Allow Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X
-        (event.keyCode === 65 && event.ctrlKey === true) ||
-        (event.keyCode === 67 && event.ctrlKey === true) ||
-        (event.keyCode === 86 && event.ctrlKey === true) ||
-        (event.keyCode === 88 && event.ctrlKey === true)) {
-        return;
-    }
-    // Ensure that it is a number and stop the keypress
-    if ((event.shiftKey || (event.keyCode < 48 || event.keyCode > 57)) && (event.keyCode < 96 || event.keyCode > 105)) {
+    if (event.ctrlKey || event.metaKey) return;
+
+    const allowedKeys = [
+      "Backspace",
+      "Delete",
+      "Tab",
+      "Escape",
+      "Enter",
+      "ArrowLeft",
+      "ArrowRight",
+      "ArrowUp",
+      "ArrowDown"
+    ];
+
+    if (allowedKeys.includes(event.key)) return;
+
+    const input = event.target;
+    const value = input.value;
+
+    // cover case we add more than one :
+    if (event.key === ":") {
+      if (value.includes(":")) {
         event.preventDefault();
+        return;
+      }
+      if (value.length === 0) {
+        event.preventDefault();
+        input.value = "00:";
+      }
+      return;
+    }
+
+    if (!/^[0-9]$/.test(event.key)) {
+      event.preventDefault();
+      return;
+    }
+
+
+    // covers case of 3 -> 03:
+    if (value.length === 0 && Number(event.key) > 2) {
+      event.preventDefault();
+      input.value = `0${event.key}:`;
+      return
+    }
+
+    // cover case of 12 -> 12:
+    if (value.length === 1) {
+      event.preventDefault()
+      input.value = value + event.key + ":";
+      return;
     }
 }
 
