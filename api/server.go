@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -130,7 +131,7 @@ func (ws *WebServer) setupRoutes() {
 	ws.router.GET("/photos/:category/:name/image", ws.handlePhotoImage)
 	ws.router.DELETE("/photos/:name/category/:category", ws.handleDeletePhoto)
 	ws.router.PUT("/photos/:name/reorder", ws.handleReorderPhoto)
-	ws.router.POST("/slideshow/play", ws.handlePlayFromPhoto)
+	ws.router.POST("/slideshow/play/:name/category/:category", ws.handlePlayFromPhoto)
 	ws.router.GET("/settings", ws.handleGetSettings)
 	ws.router.PUT("/settings", ws.handleUpdateSettings)
 	ws.router.GET("/schedule", ws.handleGetSchedule)
@@ -296,6 +297,25 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: errorMsg})
 		return
+	}
+
+	// auto resize so that viewing in ui is more reliable
+	targetMaxDimStr := os.Getenv("DPF_TARGET_MAX_DIM")
+	targetMaxDim, err := strconv.Atoi(targetMaxDimStr)
+	if err != nil {
+		slog.Warn("unable to parse DPF_TARGET_MAX_DIM, using default", "DPF_TARGET_MAX_DIM", targetMaxDimStr, "default", slideshow.DefaultTargetMaxDim)
+		targetMaxDim = slideshow.DefaultTargetMaxDim
+	}
+
+	rOpt, err := slideshow.GenerateRotateOptions(originalDir, file.Filename, targetMaxDim)
+	if err != nil {
+		slog.Warn("unable generate rotate options", "error", err)
+	} else {
+		args := append([]string{"-w", "-x", strconv.Itoa(rOpt.Scale) + "%"}, rOpt.Name)
+		cmd := exec.Command("imgp", args...)
+		if err := cmd.Run(); err != nil {
+			slog.Warn("failed to downsize image", "name", rOpt.Name, "error", err)
+		}
 	}
 
 	// Get max order for category 1 (original)
@@ -701,24 +721,31 @@ func (ws *WebServer) handleUpdateSchedule(c *gin.Context) {
 }
 
 func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
-	var req models.PlayFromPhotoRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: fmt.Sprintf("Invalid request body: %v", err)})
+	photoName := c.Param("name")
+	if photoName == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Photo name is required"})
 		return
 	}
 
-	if req.PhotoName == "" {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "photo_name is required"})
+	category := c.Param("category")
+	if category == "" {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Category is required"})
 		return
 	}
 
-	if req.Category != 0 && req.Category != 1 {
+	photoCategory, err := strconv.Atoi(category)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: fmt.Sprintf("Category must be an integer, %v", err)})
+		return
+	}
+
+	if photoCategory != 0 && photoCategory != 1 {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "category must be 0 (surprise) or 1 (original)"})
 		return
 	}
 
 	// Optional: validate extension similar to upload/register handlers
-	ext := filepath.Ext(req.PhotoName)
+	ext := filepath.Ext(photoName)
 	if ext == "" || !util.SupportedExt.Contains(ext) {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{
 			Error: fmt.Sprintf("Unsupported or missing file extension: %s. Supported: .jpeg, .jpg, .png", ext),
@@ -727,14 +754,14 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 	}
 
 	// Ensure the photo exists in the database
-	exists, err := ws.db.PhotoExists(req.PhotoName, req.Category)
+	exists, err := ws.db.PhotoExists(photoName, photoCategory)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
 		return
 	}
 	if !exists {
 		c.JSON(http.StatusNotFound, models.ErrorResponse{
-			Error: fmt.Sprintf("Photo '%s' in category %d not found", req.PhotoName, req.Category),
+			Error: fmt.Sprintf("Photo '%s' in category %d not found", photoName, photoCategory),
 		})
 		return
 	}
@@ -755,7 +782,7 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 
 	for i, p := range allPhotos {
 		imgPaths[i] = ws.buildImgPathFromPhoto(p)
-		if p.PhotoName == req.PhotoName && p.Category == req.Category {
+		if p.PhotoName == photoName && p.Category == photoCategory {
 			startIdx = i
 		}
 	}
@@ -763,7 +790,7 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 	if startIdx == -1 {
 		// Defensive: DB changed between existence check and fetch
 		c.JSON(http.StatusNotFound, models.ErrorResponse{
-			Error: fmt.Sprintf("Photo '%s' in category %d not found in current playlist", req.PhotoName, req.Category),
+			Error: fmt.Sprintf("Photo '%s' in category %d not found in current playlist", photoName, photoCategory),
 		})
 		return
 	}
@@ -796,8 +823,8 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":    "Slideshow restarted",
-		"photo_name": req.PhotoName,
-		"category":   req.Category,
+		"photo_name": photoName,
+		"category":   photoCategory,
 		"interval":   settings.SlideshowIntervalSeconds,
 	})
 }
@@ -915,11 +942,13 @@ func (ws *WebServer) generateUIPhotosHTML(photos []store.Photo, category int) st
 		html += fmt.Sprintf(
 			"    <button class=\"photo-play-btn\" "+
 				"title=\"Play slideshow from this photo\" "+
-				"onclick=\"event.stopPropagation(); playFromPhoto(this)\" "+
-				"data-name=\"%s\" "+
-				"data-category=\"%d\">"+
+				"hx-post=\"/slideshow/play/%s/category/%d\" "+
+				"hx-on:click=\"event.stopPropagation()\" "+
+				"hx-trigger=\"click\" "+
+				"hx-indicator=\"#play-indicator\" >"+
 				"<i class=\"fa-solid fa-play\"></i>"+
-				"</button>\n",
+				"</button>\n"+
+				"<span id=\"play-indicator\" class=\"upload-status\" style=\"display: none;\">Starting Slideshow...</span>\n",
 			encodedName,
 			photo.Category,
 		)

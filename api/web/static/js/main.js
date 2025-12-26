@@ -40,39 +40,6 @@ function switchView(viewName, button) {
     }
 }
 
-function playFromPhoto(button) {
-    const encodedName = button.dataset.name;
-    const category = parseInt(button.dataset.category, 10);
-    if (!encodedName || Number.isNaN(category)) {
-        console.error('Missing photo metadata for playFromPhoto');
-        return;
-    }
-    const photoName = decodeURIComponent(encodedName);
-
-    fetch('/slideshow/play', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            photo_name: photoName,
-            category: category,
-            interval: 0
-        })
-    }).then(response => {
-        if (!response.ok) {
-            return response.json().then(data => {
-                const msg = data && data.error ? data.error : 'Failed to start slideshow';
-                alert(msg);
-            }).catch(() => {
-                alert('Failed to start slideshow');
-            });
-        }
-    }).catch(() => {
-        alert('Failed to start slideshow');
-    });
-}
-
 // Settings state
 let originalSettings = null;
 let currentSettings = null;

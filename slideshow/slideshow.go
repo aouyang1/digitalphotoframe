@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aouyang1/digitalphotoframe/util"
 )
@@ -52,10 +53,10 @@ func clearImgpArtifacts(rootPath string) error {
 	return nil
 }
 
-type rotateOptions struct {
-	name    string
-	degrees int
-	scale   int
+type RotateOptions struct {
+	Name    string
+	Degrees int
+	Scale   int
 }
 
 func rotateImages(rootPath string, targetMaxDim int) error {
@@ -83,7 +84,7 @@ func rotateImages(rootPath string, targetMaxDim int) error {
 		}
 
 		// Collect image files (excluding already rotated ones) and build rotate options
-		var imageRotOptions []rotateOptions
+		var imageRotOptions []RotateOptions
 		for _, entry := range entries {
 			if entry.IsDir() {
 				continue
@@ -108,37 +109,12 @@ func rotateImages(rootPath string, targetMaxDim int) error {
 			}
 
 			// perform rotation in original directory
-			ext := filepath.Ext(name)
-			if util.SupportedExt.Contains(ext) {
-				imageFilePath := filepath.Join(dir, name)
-				imageFile, err := os.Open(imageFilePath)
-				if err != nil {
-					slog.Warn("unable to read image for resolution", "name", imageFilePath, "error", err)
-					continue
-				}
-				var imageCfg image.Config
-				switch strings.ToLower(ext) {
-				case ".jpg", ".jpeg":
-					imageCfg, err = jpeg.DecodeConfig(imageFile)
-				case ".png":
-					imageCfg, err = png.DecodeConfig(imageFile)
-				default:
-					slog.Warn("unknown file extension to get resolution details", "ext", ext, "name", imageFilePath)
-				}
-				if err != nil {
-					slog.Warn("unable to read image config", "name", imageFilePath, "error", err)
-				}
-				downScale := 100
-				downScale = min(downScale, int(float64(targetMaxDim)/float64(imageCfg.Height)*100))
-				downScale = min(downScale, int(float64(targetMaxDim)/float64(imageCfg.Width)*100))
-
-				rOpt := rotateOptions{
-					name:    imageFilePath,
-					degrees: 90,
-					scale:   downScale,
-				}
-				imageRotOptions = append(imageRotOptions, rOpt)
+			rOpt, err := GenerateRotateOptions(dir, name, targetMaxDim)
+			if err != nil {
+				slog.Warn("unable generate rotate options", "error", err)
+				continue
 			}
+			imageRotOptions = append(imageRotOptions, rOpt)
 		}
 
 		if len(imageRotOptions) == 0 {
@@ -147,17 +123,17 @@ func rotateImages(rootPath string, targetMaxDim int) error {
 
 		// downsize and then rotate
 		for rOpt := range slices.Values(imageRotOptions) {
-			args := append([]string{"-w", "-x", strconv.Itoa(rOpt.scale) + "%"}, rOpt.name)
+			args := append([]string{"-w", "-x", strconv.Itoa(rOpt.Scale) + "%"}, rOpt.Name)
 			cmd := exec.Command("imgp", args...)
 			if err := cmd.Run(); err != nil {
-				slog.Warn("failed to downsize image", "name", rOpt.name, "error", err)
+				slog.Warn("failed to downsize image", "name", rOpt.Name, "error", err)
 				continue
 			}
 
-			args = append([]string{"-o", strconv.Itoa(rOpt.degrees)}, rOpt.name)
+			args = append([]string{"-o", strconv.Itoa(rOpt.Degrees)}, rOpt.Name)
 			cmd = exec.Command("imgp", args...)
 			if err := cmd.Run(); err != nil {
-				slog.Warn("failed to rotate image", "name", rOpt.name, "error", err)
+				slog.Warn("failed to rotate image", "name", rOpt.Name, "error", err)
 			}
 		}
 	}
@@ -203,19 +179,55 @@ func rotateImages(rootPath string, targetMaxDim int) error {
 	return nil
 }
 
+func GenerateRotateOptions(dir, name string, targetMaxDim int) (RotateOptions, error) {
+	var rOpt RotateOptions
+
+	ext := filepath.Ext(name)
+	if !util.SupportedExt.Contains(ext) {
+		return rOpt, fmt.Errorf("unsupported image extension, %s", ext)
+	}
+	imageFilePath := filepath.Join(dir, name)
+
+	imageFile, err := os.Open(imageFilePath)
+	if err != nil {
+		return rOpt, fmt.Errorf("unable to read image for resolution, %w", err)
+	}
+	var imageCfg image.Config
+	switch strings.ToLower(ext) {
+	case ".jpg", ".jpeg":
+		imageCfg, err = jpeg.DecodeConfig(imageFile)
+	case ".png":
+		imageCfg, err = png.DecodeConfig(imageFile)
+	default:
+		return rOpt, fmt.Errorf("unknown file extension to get resolution details, ext, %s", ext)
+	}
+	if err != nil {
+		return rOpt, fmt.Errorf("unable to read image config, %w", err)
+	}
+	downScale := 100
+	downScale = min(downScale, int(float64(targetMaxDim)/float64(imageCfg.Height)*100))
+	downScale = min(downScale, int(float64(targetMaxDim)/float64(imageCfg.Width)*100))
+
+	return RotateOptions{
+		Name:    imageFilePath,
+		Degrees: 90,
+		Scale:   downScale,
+	}, nil
+}
+
 func moveRotatedImages(rootPath string) error {
 	// Move from original to photos
 	originalDir := filepath.Join(rootPath, "original")
 	photosDir := filepath.Join(rootPath, "photos")
 
 	// Ensure photos directory exists
-	if err := os.MkdirAll(photosDir, 0755); err != nil {
+	if err := os.MkdirAll(photosDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create photos directory: %w", err)
 	}
 
 	// Ensure photos/surprise directory exists
 	surprisePhotosDir := filepath.Join(rootPath, "photos/surprise")
-	if err := os.MkdirAll(surprisePhotosDir, 0755); err != nil {
+	if err := os.MkdirAll(surprisePhotosDir, 0o755); err != nil {
 		return fmt.Errorf("failed to create photos/surprise directory: %w", err)
 	}
 
@@ -262,6 +274,21 @@ func killImvWayland() error {
 	return nil
 }
 
+func checkImvWayland() (bool, error) {
+	cmd := exec.Command("pgrep", "imv-wayland")
+	out, err := cmd.Output()
+	if err != nil {
+		// pkill returns error if no process found, which is fine
+		return false, fmt.Errorf("unable to check if imv-wayland is running, %w", err)
+	}
+
+	pid := strings.TrimSuffix(string(out), "\n")
+	if len(pid) > 0 {
+		return true, nil
+	}
+	return false, nil
+}
+
 const defaultInterval = 15
 
 func startImvWayland(rootPath string, imgPaths []string, interval int) error {
@@ -282,7 +309,7 @@ func startImvWayland(rootPath string, imgPaths []string, interval int) error {
 		photosDir := filepath.Join(rootPath, "photos")
 
 		// Ensure photos directory exists
-		if err := os.MkdirAll(photosDir, 0755); err != nil {
+		if err := os.MkdirAll(photosDir, 0o755); err != nil {
 			return fmt.Errorf("failed to create photos directory: %w", err)
 		}
 
@@ -305,7 +332,11 @@ func startImvWayland(rootPath string, imgPaths []string, interval int) error {
 	return nil
 }
 
-const defaultTargetMaxDim = 1080
+const (
+	DefaultTargetMaxDim = 1024
+	checkRetries        = 30
+	checkInterval       = 1 * time.Second
+)
 
 func RestartSlideshow(imgPaths []string, interval int) error {
 	rootPath := os.Getenv("DPF_ROOT_PATH")
@@ -315,8 +346,8 @@ func RestartSlideshow(imgPaths []string, interval int) error {
 	targetMaxDimStr := os.Getenv("DPF_TARGET_MAX_DIM")
 	targetMaxDim, err := strconv.Atoi(targetMaxDimStr)
 	if err != nil {
-		slog.Warn("unable to parse DPF_TARGET_MAX_DIM, using default", "DPF_TARGET_MAX_DIM", targetMaxDimStr, "default", defaultTargetMaxDim)
-		targetMaxDim = defaultTargetMaxDim
+		slog.Warn("unable to parse DPF_TARGET_MAX_DIM, using default", "DPF_TARGET_MAX_DIM", targetMaxDimStr, "default", DefaultTargetMaxDim)
+		targetMaxDim = DefaultTargetMaxDim
 	}
 
 	// Clear old imgp artifacts
@@ -344,5 +375,27 @@ func RestartSlideshow(imgPaths []string, interval int) error {
 		return fmt.Errorf("failed to restart slideshow: %w", err)
 	}
 
+	ticker := time.NewTicker(checkInterval)
+	defer ticker.Stop()
+
+	var retries int
+	for range ticker.C {
+		running, err := checkImvWayland()
+		if err != nil {
+			slog.Warn("issue checking if imv-wayland is running", "error", err)
+			retries += 1
+			continue
+		}
+		if !running {
+			if retries >= checkRetries-1 {
+				slog.Warn("exhausted retry check for imv-wayland running")
+				return nil
+			}
+			retries += 1
+			continue
+		}
+		// imv-wayland is running
+		break
+	}
 	return nil
 }
