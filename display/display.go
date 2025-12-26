@@ -1,4 +1,4 @@
-package wlrrandr
+package display
 
 import (
 	"encoding/json"
@@ -41,9 +41,9 @@ type Position struct {
 	Y int `json:"y"`
 }
 
-// GetDisplayEnabled inspects the current state of the HDMI-A-1 output using wlr-randr.
+// GetEnabled inspects the current state of the HDMI-A-1 output using wlr-randr.
 // It returns true if the output is enabled, false if disabled.
-func GetDisplayEnabled() (bool, error) {
+func GetEnabled() (bool, error) {
 	cmd := exec.Command("wlr-randr", "--output", OutputName, "--json")
 	out, err := cmd.Output()
 	if err != nil {
@@ -64,8 +64,8 @@ func GetDisplayEnabled() (bool, error) {
 	return false, fmt.Errorf("output %s not found", OutputName)
 }
 
-// UpdateDisplayEnabled updates the enabled state of the HDMI-A-1 output using wlr-randr.
-func UpdateDisplayEnabled(enabled bool) error {
+// UpdateEnabled updates the enabled state of the HDMI-A-1 output using wlr-randr.
+func UpdateEnabled(enabled bool) error {
 	arg := "--off"
 	if enabled {
 		arg = "--on"

@@ -19,10 +19,10 @@ import (
 	"sync"
 
 	"github.com/aouyang1/digitalphotoframe/api/models"
+	"github.com/aouyang1/digitalphotoframe/display"
 	"github.com/aouyang1/digitalphotoframe/slideshow"
 	"github.com/aouyang1/digitalphotoframe/store"
 	"github.com/aouyang1/digitalphotoframe/util"
-	"github.com/aouyang1/digitalphotoframe/wlrrandr"
 	"github.com/gin-gonic/gin"
 )
 
@@ -830,7 +830,7 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 }
 
 func (ws *WebServer) handleGetDisplay(c *gin.Context) {
-	enabled, err := wlrrandr.GetDisplayEnabled()
+	enabled, err := display.GetEnabled()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to get display state: %v", err)})
 		return
@@ -847,13 +847,13 @@ func (ws *WebServer) handleUpdateDisplay(c *gin.Context) {
 	}
 
 	desiredEnabled := state == "1"
-	if err := wlrrandr.UpdateDisplayEnabled(desiredEnabled); err != nil {
+	if err := display.UpdateEnabled(desiredEnabled); err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to update display state: %v", err)})
 		return
 	}
 
 	// Re-read state to reflect actual output if possible.
-	enabled, err := wlrrandr.GetDisplayEnabled()
+	enabled, err := display.GetEnabled()
 	if err != nil {
 		slog.Warn("failed to re-read display state after update", "error", err)
 		enabled = desiredEnabled

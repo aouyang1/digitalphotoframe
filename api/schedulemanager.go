@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/aouyang1/digitalphotoframe/display"
 	"github.com/aouyang1/digitalphotoframe/store"
-	"github.com/aouyang1/digitalphotoframe/wlrrandr"
 )
 
 const scheduleInterval = time.Minute
@@ -62,7 +62,7 @@ func (s *ScheduleManager) checkSchedule() {
 
 	// crossed into end of schedule - turn off display
 	if s.lastCheck.Before(endDate) && now.After(endDate) {
-		if err := wlrrandr.UpdateDisplayEnabled(false); err != nil {
+		if err := display.UpdateEnabled(false); err != nil {
 			slog.Warn("issue while turning off display for schedule", "error", err)
 		} else {
 			slog.Info("turning display off for schedule", "time", now)
@@ -72,7 +72,7 @@ func (s *ScheduleManager) checkSchedule() {
 
 	// crossed into start of schedule - turn on display
 	if now.After(startDate) && s.lastCheck.Before(startDate) {
-		if err := wlrrandr.UpdateDisplayEnabled(true); err != nil {
+		if err := display.UpdateEnabled(true); err != nil {
 			slog.Warn("issue while turning on display for schedule", "error", err)
 		} else {
 			slog.Info("turning display on for schedule", "time", now)
