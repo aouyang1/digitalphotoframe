@@ -276,7 +276,7 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 
 	// Ensure the original directory exists
 	originalDir := filepath.Join(ws.rootPath, "original")
-	if err := os.MkdirAll(originalDir, 0755); err != nil {
+	if err := os.MkdirAll(originalDir, 0o755); err != nil {
 		errorMsg := fmt.Sprintf("Failed to create directory: %v", err)
 		if isHTMX {
 			c.String(http.StatusInternalServerError, "Error: "+errorMsg)
@@ -776,11 +776,18 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 		ordered = append(imgPaths[startIdx:], imgPaths[:startIdx]...)
 	}
 
-	interval := req.Interval
+	settings, err := ws.db.GetAppSettings()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
+			Error: fmt.Sprintf("Unable to fetch app settings, %v", err),
+		})
+		return
+	}
+
 	ws.imvMutex.Lock()
 	defer ws.imvMutex.Unlock()
 	// Let slideshow.RestartSlideshow handle defaulting when interval <= 0
-	if err := slideshow.RestartSlideshow(ordered, interval); err != nil {
+	if err := slideshow.RestartSlideshow(ordered, settings.SlideshowIntervalSeconds); err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{
 			Error: fmt.Sprintf("Failed to restart slideshow: %v", err),
 		})
@@ -791,7 +798,7 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 		"message":    "Slideshow restarted",
 		"photo_name": req.PhotoName,
 		"category":   req.Category,
-		"interval":   interval,
+		"interval":   settings.SlideshowIntervalSeconds,
 	})
 }
 
