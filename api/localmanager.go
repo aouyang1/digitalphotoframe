@@ -37,10 +37,6 @@ func NewLocalManager() (*LocalManager, error) {
 	}
 
 	// Initialize photo client
-	webServerURL := os.Getenv("DPF_WEBSERVER_URL")
-	if webServerURL == "" {
-		webServerURL = "http://localhost:80"
-	}
 	photoClient := client.NewPhotoClient(webServerURL)
 
 	l := &LocalManager{

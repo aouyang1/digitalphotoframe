@@ -100,14 +100,6 @@ Set the following environment variables before running the application:
   - S3 bucket name containing photos
   - Example: `export DPF_S3_BUCKET=my-photo-bucket`
 
-- **`DPF_S3_OUTPUT_PATH`** (Optional)
-  - Override output path for S3 downloads (defaults to `${ROOT_PATH_DPF}/original/surprise` if `ROOT_PATH_DPF` is set)
-  - Example: `export DPF_S3_OUTPUT_PATH=/custom/path`
-
-- **`DPF_WEBSERVER_URL`** (Optional)
-  - Web server URL for photo client (defaults to `http://localhost`)
-  - Example: `export DPF_WEBSERVER_URL=http://192.168.1.100`
-
 ### Go Requirements
 
 - Go 1.24.5 or later

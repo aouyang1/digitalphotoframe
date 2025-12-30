@@ -29,6 +29,8 @@ import (
 //go:embed web/templates/* web/static/**
 var webFiles embed.FS
 
+const webServerURL = "http://localhost:80"
+
 type WebServer struct {
 	router   *gin.Engine
 	db       *store.Database

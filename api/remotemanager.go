@@ -67,12 +67,7 @@ func NewRemoteManager() (*RemoteManager, error) {
 	s3Client := s3.NewFromConfig(cfg)
 
 	// Initialize photo client if web server URL is available
-	var photoClient *client.PhotoClient
-	webServerURL := os.Getenv("DPF_WEBSERVER_URL")
-	if webServerURL == "" {
-		webServerURL = "http://localhost:80"
-	}
-	photoClient = client.NewPhotoClient(webServerURL)
+	photoClient := client.NewPhotoClient(webServerURL)
 
 	return &RemoteManager{
 		client:      s3Client,
