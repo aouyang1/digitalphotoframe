@@ -25,7 +25,6 @@ const remoteCheckInterval = time.Duration(24 * time.Hour)
 type RemoteManager struct {
 	client *s3.Client
 
-	profile  string
 	s3Bucket string
 
 	outputPath string
@@ -43,10 +42,6 @@ func NewRemoteManager() (*RemoteManager, error) {
 	}
 	outputPath := filepath.Join(rootPath, "original/surprise")
 
-	awsProfileName := os.Getenv("DPF_AWS_PROFILE")
-	if awsProfileName == "" {
-		return nil, errors.New("no aws profile provided in environment variable DPF_AWS_PROFILE")
-	}
 	s3Bucket := os.Getenv("DPF_S3_BUCKET")
 	if s3Bucket == "" {
 		return nil, errors.New("no s3 bucket provided in environment variable DPF_S3_BUCKET")
@@ -56,7 +51,6 @@ func NewRemoteManager() (*RemoteManager, error) {
 	ctxCfg, cancelCfg := context.WithTimeout(context.Background(), time.Duration(3*time.Second))
 	cfg, err := config.LoadDefaultConfig(
 		ctxCfg,
-		config.WithSharedConfigProfile(awsProfileName),
 	)
 	cancelCfg()
 	if err != nil {
@@ -71,7 +65,6 @@ func NewRemoteManager() (*RemoteManager, error) {
 
 	return &RemoteManager{
 		client:      s3Client,
-		profile:     awsProfileName,
 		s3Bucket:    s3Bucket,
 		outputPath:  outputPath,
 		photoClient: photoClient,

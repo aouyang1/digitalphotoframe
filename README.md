@@ -10,7 +10,7 @@ personal digital photo frame setup for raspberry pi
 
 Install on Debian/Ubuntu:
 ```bash
-sudo apt-get install imv-wayland imgp
+sudo apt-get install imv imgp
 ```
 
 ### AWS Setup
@@ -21,14 +21,14 @@ sudo apt-get install imv-wayland imgp
    brew install awscli
    
    # On Linux
-   curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+   curl "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip"
    unzip awscliv2.zip
    sudo ./aws/install
    ```
 
 2. **Create AWS Profile**
    ```bash
-   aws configure --profile <your-profile-name>
+   aws configure
    ```
    Enter your AWS Access Key ID, Secret Access Key, region, and output format when prompted.
 
@@ -92,10 +92,6 @@ Set the following environment variables before running the application:
   - Root directory path for storing photos and database
   - Example: `export DPF_ROOT_PATH=/home/user/photos`
 
-- **`DPF_AWS_PROFILE`** (Required)
-  - AWS CLI profile name to use for S3 access
-  - Example: `export DPF_AWS_PROFILE=my-photo-frame-profile`
-
 - **`DPF_S3_BUCKET`** (Required)
   - S3 bucket name containing photos
   - Example: `export DPF_S3_BUCKET=my-photo-bucket`
@@ -109,8 +105,7 @@ Set the following environment variables before running the application:
 
 1. Set environment variables:
    ```bash
-   export ROOT_PATH_DPF=/path/to/photos
-   export DPF_AWS_PROFILE=your-profile-name
+   export DPF_ROOT_PATH=/path/to/photos
    export DPF_S3_BUCKET=your-bucket-name
    ```
 
