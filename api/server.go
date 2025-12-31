@@ -3,6 +3,7 @@ package api
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -233,72 +234,69 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 	// Check if this is an HTMX request
 	isHTMX := c.GetHeader("HX-Request") == "true"
 
+	if statusCode, err := ws.upload(c); err != nil {
+		if isHTMX {
+			c.String(statusCode, err.Error())
+			return
+		}
+		c.JSON(statusCode, models.ErrorResponse{Error: err.Error()})
+		return
+	}
+	// If HTMX request, return HTML fragment with updated photos
+	if isHTMX {
+		// Get all photos for category 1
+		photos, err := ws.db.GetAllPhotos(1)
+		if err != nil {
+			c.String(http.StatusInternalServerError, "Error: Failed to refresh photos")
+			return
+		}
+
+		html := ws.generateUIPhotosHTML(photos, 1)
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+
+		// trigger slideshow restart
+		ws.Updated <- true
+		return
+	}
+
+	c.Status(http.StatusOK)
+
+	// trigger slideshow restart
+	ws.Updated <- true
+}
+
+func (ws *WebServer) upload(c *gin.Context) (int, error) {
 	// Get the file from the form
 	file, err := c.FormFile("file")
 	if err != nil {
-		if isHTMX {
-			c.String(http.StatusBadRequest, "Error: No file provided")
-			return
-		}
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "No file provided"})
-		return
+		return http.StatusBadRequest, errors.New("no file provided")
 	}
 
 	// Validate file extension
 	ext := filepath.Ext(file.Filename)
 	if !util.SupportedExt.Contains(ext) {
-		errorMsg := fmt.Sprintf("Unsupported file extension: %s. Supported: .jpeg, .jpg, .png", ext)
-		if isHTMX {
-			c.String(http.StatusBadRequest, "Error: "+errorMsg)
-			return
-		}
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: errorMsg})
-		return
+		return http.StatusBadRequest, fmt.Errorf("unsupported file extension: %s. Supported: .jpeg, .jpg, .png", ext)
 	}
 
 	// Check for duplicates
 	exists, err := ws.db.PhotoExists(file.Filename, 1)
 	if err != nil {
-		errorMsg := fmt.Sprintf("Database error: %v", err)
-		if isHTMX {
-			c.String(http.StatusInternalServerError, "Error: "+errorMsg)
-			return
-		}
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: errorMsg})
-		return
+		return http.StatusInternalServerError, fmt.Errorf("database error, %w", err)
 	}
 	if exists {
-		errorMsg := fmt.Sprintf("Photo with name '%s' already exists", file.Filename)
-		if isHTMX {
-			c.String(http.StatusConflict, "Error: "+errorMsg)
-			return
-		}
-		c.JSON(http.StatusConflict, models.ErrorResponse{Error: errorMsg})
-		return
+		return http.StatusConflict, fmt.Errorf("photo with name '%s' already exists", file.Filename)
 	}
 
 	// Ensure the original directory exists
 	originalDir := filepath.Join(ws.rootPath, "original")
 	if err := os.MkdirAll(originalDir, 0o755); err != nil {
-		errorMsg := fmt.Sprintf("Failed to create directory: %v", err)
-		if isHTMX {
-			c.String(http.StatusInternalServerError, "Error: "+errorMsg)
-			return
-		}
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: errorMsg})
-		return
+		return http.StatusInternalServerError, fmt.Errorf("failed to create directory: %w", err)
 	}
 
 	// Save file to disk
 	filePath := filepath.Join(originalDir, file.Filename)
 	if err := c.SaveUploadedFile(file, filePath); err != nil {
-		errorMsg := fmt.Sprintf("Failed to save file: %v", err)
-		if isHTMX {
-			c.String(http.StatusInternalServerError, "Error: "+errorMsg)
-			return
-		}
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: errorMsg})
-		return
+		return http.StatusInternalServerError, fmt.Errorf("failed to save file: %w", err)
 	}
 
 	// auto resize so that viewing in ui is more reliable
@@ -324,55 +322,22 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 	maxOrder, err := ws.db.GetMaxOrder(1)
 	if err != nil {
 		// Clean up file if DB insert fails
-		os.Remove(filePath)
-		errorMsg := fmt.Sprintf("Database error: %v", err)
-		if isHTMX {
-			c.String(http.StatusInternalServerError, "Error: "+errorMsg)
-			return
+		if remErr := os.Remove(filePath); remErr != nil {
+			return http.StatusInternalServerError, fmt.Errorf("database error, %w, with failed file removal, %w", err, remErr)
 		}
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: errorMsg})
-		return
+		return http.StatusInternalServerError, fmt.Errorf("database error: %v", err)
 	}
 
 	// Insert into database
 	if err := ws.db.InsertPhoto(file.Filename, 1, maxOrder); err != nil {
 		// Clean up file if DB insert fails
-		os.Remove(filePath)
-		errorMsg := fmt.Sprintf("Failed to insert photo into database: %v", err)
-		if isHTMX {
-			c.String(http.StatusInternalServerError, "Error: "+errorMsg)
-			return
-		}
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: errorMsg})
-		return
-	}
-
-	// If HTMX request, return HTML fragment with updated photos
-	if isHTMX {
-		// Get all photos for category 1
-		photos, err := ws.db.GetAllPhotos(1)
-		if err != nil {
-			c.String(http.StatusInternalServerError, "Error: Failed to refresh photos")
-			return
+		if remErr := os.Remove(filePath); remErr != nil {
+			return http.StatusInternalServerError, fmt.Errorf("failed to insert photo into database, %w, with failed file removal, %w", err, remErr)
 		}
 
-		html := ws.generateUIPhotosHTML(photos, 1)
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
-
-		// trigger slideshow restart
-		ws.Updated <- true
-		return
+		return http.StatusInternalServerError, fmt.Errorf("failed to insert photo into database: %w", err)
 	}
-
-	c.JSON(http.StatusOK, models.UploadResponse{
-		PhotoName: file.Filename,
-		Category:  1,
-		Order:     maxOrder,
-		Message:   "Photo uploaded successfully",
-	})
-
-	// trigger slideshow restart
-	ws.Updated <- true
+	return http.StatusOK, nil
 }
 
 func (ws *WebServer) handleRegisterPhoto(c *gin.Context) {

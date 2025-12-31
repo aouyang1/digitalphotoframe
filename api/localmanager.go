@@ -14,7 +14,7 @@ import (
 
 const (
 	localCheckInterval = 24 * time.Hour
-	localPhotoLimit    = 1000
+	localPhotoLimit    = 24
 )
 
 type LocalManager struct {
