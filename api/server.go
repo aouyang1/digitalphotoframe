@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/aouyang1/digitalphotoframe/api/models"
+	"github.com/aouyang1/digitalphotoframe/api/web/templates"
 	"github.com/aouyang1/digitalphotoframe/display"
 	"github.com/aouyang1/digitalphotoframe/slideshow"
 	"github.com/aouyang1/digitalphotoframe/store"
@@ -31,6 +32,11 @@ import (
 var webFiles embed.FS
 
 const webServerURL = "http://localhost:80"
+
+type ServerError struct {
+	StatusCode int
+	Error      error
+}
 
 type WebServer struct {
 	router   *gin.Engine
@@ -133,7 +139,6 @@ func (ws *WebServer) setupRoutes() {
 	ws.router.GET("/photos", ws.handleListPhotos)
 	ws.router.GET("/photos/:category/:name/image", ws.handlePhotoImage)
 	ws.router.DELETE("/photos/:name/category/:category", ws.handleDeletePhoto)
-	ws.router.PUT("/photos/:name/reorder", ws.handleReorderPhoto)
 	ws.router.POST("/slideshow/play/:name/category/:category", ws.handlePlayFromPhoto)
 	ws.router.GET("/settings", ws.handleGetSettings)
 	ws.router.PUT("/settings", ws.handleUpdateSettings)
@@ -234,12 +239,12 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 	// Check if this is an HTMX request
 	isHTMX := c.GetHeader("HX-Request") == "true"
 
-	if statusCode, err := ws.upload(c); err != nil {
+	if srvErr := ws.upload(c); srvErr != nil {
 		if isHTMX {
-			c.String(statusCode, err.Error())
+			c.String(srvErr.StatusCode, srvErr.Error.Error())
 			return
 		}
-		c.JSON(statusCode, models.ErrorResponse{Error: err.Error()})
+		c.JSON(srvErr.StatusCode, models.ErrorResponse{Error: srvErr.Error.Error()})
 		return
 	}
 	// If HTMX request, return HTML fragment with updated photos
@@ -247,12 +252,12 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 		// Get all photos for category 1
 		photos, err := ws.db.GetAllPhotos(1)
 		if err != nil {
-			c.String(http.StatusInternalServerError, "Error: Failed to refresh photos")
+			c.String(http.StatusInternalServerError, "failed to refresh photos")
 			return
 		}
 
-		html := ws.generateUIPhotosHTML(photos, 1)
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
+		component := templates.PhotoRow(photos, 1)
+		component.Render(c.Request.Context(), c.Writer)
 
 		// trigger slideshow restart
 		ws.Updated <- true
@@ -265,38 +270,38 @@ func (ws *WebServer) handleUpload(c *gin.Context) {
 	ws.Updated <- true
 }
 
-func (ws *WebServer) upload(c *gin.Context) (int, error) {
+func (ws *WebServer) upload(c *gin.Context) *ServerError {
 	// Get the file from the form
 	file, err := c.FormFile("file")
 	if err != nil {
-		return http.StatusBadRequest, errors.New("no file provided")
+		return &ServerError{http.StatusBadRequest, errors.New("no file provided")}
 	}
 
 	// Validate file extension
 	ext := filepath.Ext(file.Filename)
 	if !util.SupportedExt.Contains(ext) {
-		return http.StatusBadRequest, fmt.Errorf("unsupported file extension: %s. Supported: .jpeg, .jpg, .png", ext)
+		return &ServerError{http.StatusBadRequest, fmt.Errorf("unsupported file extension: %s. Supported: .jpeg, .jpg, .png", ext)}
 	}
 
 	// Check for duplicates
 	exists, err := ws.db.PhotoExists(file.Filename, 1)
 	if err != nil {
-		return http.StatusInternalServerError, fmt.Errorf("database error, %w", err)
+		return &ServerError{http.StatusInternalServerError, fmt.Errorf("database error, %w", err)}
 	}
 	if exists {
-		return http.StatusConflict, fmt.Errorf("photo with name '%s' already exists", file.Filename)
+		return &ServerError{http.StatusConflict, fmt.Errorf("photo with name '%s' already exists", file.Filename)}
 	}
 
 	// Ensure the original directory exists
 	originalDir := filepath.Join(ws.rootPath, "original")
 	if err := os.MkdirAll(originalDir, 0o755); err != nil {
-		return http.StatusInternalServerError, fmt.Errorf("failed to create directory: %w", err)
+		return &ServerError{http.StatusInternalServerError, fmt.Errorf("failed to create directory: %w", err)}
 	}
 
 	// Save file to disk
 	filePath := filepath.Join(originalDir, file.Filename)
 	if err := c.SaveUploadedFile(file, filePath); err != nil {
-		return http.StatusInternalServerError, fmt.Errorf("failed to save file: %w", err)
+		return &ServerError{http.StatusInternalServerError, fmt.Errorf("failed to save file: %w", err)}
 	}
 
 	// auto resize so that viewing in ui is more reliable
@@ -323,21 +328,21 @@ func (ws *WebServer) upload(c *gin.Context) (int, error) {
 	if err != nil {
 		// Clean up file if DB insert fails
 		if remErr := os.Remove(filePath); remErr != nil {
-			return http.StatusInternalServerError, fmt.Errorf("database error, %w, with failed file removal, %w", err, remErr)
+			return &ServerError{http.StatusInternalServerError, fmt.Errorf("database error, %w, with failed file removal, %w", err, remErr)}
 		}
-		return http.StatusInternalServerError, fmt.Errorf("database error: %v", err)
+		return &ServerError{http.StatusInternalServerError, fmt.Errorf("database error: %v", err)}
 	}
 
 	// Insert into database
 	if err := ws.db.InsertPhoto(file.Filename, 1, maxOrder); err != nil {
 		// Clean up file if DB insert fails
 		if remErr := os.Remove(filePath); remErr != nil {
-			return http.StatusInternalServerError, fmt.Errorf("failed to insert photo into database, %w, with failed file removal, %w", err, remErr)
+			return &ServerError{http.StatusInternalServerError, fmt.Errorf("failed to insert photo into database, %w, with failed file removal, %w", err, remErr)}
 		}
 
-		return http.StatusInternalServerError, fmt.Errorf("failed to insert photo into database: %w", err)
+		return &ServerError{http.StatusInternalServerError, fmt.Errorf("failed to insert photo into database: %w", err)}
 	}
-	return http.StatusOK, nil
+	return nil
 }
 
 func (ws *WebServer) handleRegisterPhoto(c *gin.Context) {
@@ -406,12 +411,7 @@ func (ws *WebServer) handleRegisterPhoto(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, models.RegisterPhotoResponse{
-		PhotoName: req.PhotoName,
-		Category:  req.Category,
-		Order:     maxOrder,
-		Message:   "Photo registered successfully",
-	})
+	c.Status(http.StatusCreated)
 }
 
 func (ws *WebServer) handleListPhotos(c *gin.Context) {
@@ -509,74 +509,6 @@ func (ws *WebServer) handleDeletePhoto(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("Photo '%s' deleted successfully", name)})
 }
 
-func (ws *WebServer) handleReorderPhoto(c *gin.Context) {
-	name := c.Param("name")
-	if name == "" {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Photo name is required"})
-		return
-	}
-
-	category := c.Param("category")
-	if category == "" {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Category is required"})
-		return
-	}
-
-	categoryInt, err := strconv.Atoi(category)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Invalid category parameter"})
-		return
-	}
-
-	// Parse request body
-	var req models.ReorderRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: fmt.Sprintf("Invalid request body: %v", err)})
-		return
-	}
-
-	if req.NewOrder < 0 {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "new_order must be non-negative"})
-		return
-	}
-
-	// Get photo to determine category
-	photo, err := ws.db.GetPhoto(name, categoryInt)
-	if err != nil {
-		c.JSON(http.StatusNotFound, models.ErrorResponse{Error: fmt.Sprintf("Photo '%s' not found", name)})
-		return
-	}
-
-	// Get max order to validate new_order
-	maxOrder, err := ws.db.GetMaxOrder(categoryInt)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Database error: %v", err)})
-		return
-	}
-
-	if req.NewOrder >= maxOrder {
-		c.JSON(http.StatusBadRequest, models.ErrorResponse{
-			Error: fmt.Sprintf("new_order %d exceeds maximum order %d for category %d", req.NewOrder, maxOrder-1, photo.Category),
-		})
-		return
-	}
-
-	// Update order
-	if err := ws.db.UpdatePhotoOrder(name, req.NewOrder, categoryInt); err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to update photo order: %v", err)})
-		return
-	}
-
-	// Get updated photo
-	updatedPhoto, err := ws.db.GetPhoto(name, categoryInt)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to retrieve updated photo: %v", err)})
-		return
-	}
-
-	c.JSON(http.StatusOK, updatedPhoto)
-}
-
 func (ws *WebServer) handleGetSettings(c *gin.Context) {
 	settings, err := ws.db.GetAppSettings()
 	if err != nil {
@@ -642,7 +574,7 @@ func (ws *WebServer) handleUpdateSettings(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, newSettings)
+	c.Status(http.StatusOK)
 }
 
 func (ws *WebServer) handleGetSchedule(c *gin.Context) {
@@ -684,7 +616,7 @@ func (ws *WebServer) handleUpdateSchedule(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, newSchedule)
+	c.Status(http.StatusOK)
 }
 
 func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
@@ -788,12 +720,8 @@ func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"message":    "Slideshow restarted",
-		"photo_name": photoName,
-		"category":   photoCategory,
-		"interval":   settings.SlideshowIntervalSeconds,
-	})
+	component := templates.PlayButtonIcons()
+	component.Render(c.Request.Context(), c.Writer)
 }
 
 func (ws *WebServer) handleGetDisplay(c *gin.Context) {
@@ -884,62 +812,6 @@ func (ws *WebServer) handleUIPhotos(c *gin.Context) {
 		return
 	}
 
-	html := ws.generateUIPhotosHTML(photos, category)
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(html))
-}
-
-func (ws *WebServer) generateUIPhotosHTML(photos []store.Photo, category int) string {
-	html := "<div class=\"photo-row\">\n"
-	for _, photo := range photos {
-		encodedName := url.PathEscape(photo.PhotoName)
-		imageURL := fmt.Sprintf("/photos/%d/%s/image", photo.Category, encodedName)
-
-		// Start photo container
-		html += "  <div class=\"photo-item\">\n"
-
-		// Photo thumbnail
-		html += fmt.Sprintf(
-			"    <img src=\"%s\" alt=\"%s\" class=\"photo-thumbnail\" onclick=\"openPhotoModal('%s')\" />\n",
-			imageURL,
-			photo.PhotoName,
-			imageURL,
-		)
-
-		// Play button for both categories
-		html += fmt.Sprintf(
-			"    <button class=\"photo-play-btn\" "+
-				"title=\"Play slideshow from this photo\" "+
-				"hx-post=\"/slideshow/play/%s/category/%d\" "+
-				"hx-on:click=\"event.stopPropagation()\" "+
-				"hx-trigger=\"click\" "+
-				"hx-indicator=\"#play-indicator\" >"+
-				"<i class=\"fa-solid fa-play\"></i>"+
-				"</button>\n"+
-				"<span id=\"play-indicator\" class=\"upload-status\" style=\"display: none;\">Starting Slideshow...</span>\n",
-			encodedName,
-			photo.Category,
-		)
-
-		// Only render delete button for "My Photos" (category 1)
-		if category == 1 {
-			deleteURL := fmt.Sprintf("/photos/%s/category/%d", encodedName, photo.Category)
-			html += fmt.Sprintf(
-				"    <button class=\"photo-delete-btn\" "+
-					"title=\"Delete photo\" "+
-					"hx-delete=\"%s\" "+
-					"hx-target=\"this\" "+
-					"hx-swap=\"none\" "+
-					"hx-confirm=\"Delete this photo?\" "+
-					"hx-on::after-request=\"if(event.detail.xhr.status===200){ htmx.trigger(document.body, 'refreshPhotos') }\">"+
-					"<i class=\"fa-solid fa-trash-can\"></i>"+
-					"</button>\n",
-				deleteURL,
-			)
-		}
-
-		// End photo container
-		html += "  </div>\n"
-	}
-	html += "</div>"
-	return html
+	component := templates.PhotoRow(photos, category)
+	component.Render(c.Request.Context(), c.Writer)
 }

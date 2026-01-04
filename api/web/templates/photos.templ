@@ -1,0 +1,66 @@
+package templates
+
+import (
+	"github.com/aouyang1/digitalphotoframe/store"
+	"net/url"
+)
+
+templ PhotoRow(photos []store.Photo, category int) {
+	<div class="photo-row">
+		for _, photo := range photos {
+			@PhotoItem(photo, category)
+		}
+	</div>
+}
+
+templ PhotoItem(photo store.Photo, category int) {
+	<div class="photo-item">
+		@PhotoThumbnail(photo)
+		@PlayButton(photo)
+		if category == 1 {
+			@DeleteButton(photo)
+		}
+	</div>
+}
+
+templ PhotoThumbnail(photo store.Photo) {
+	<img
+		src={ photoImageURL(photo) }
+		data-image-url={ photoImageURL(photo) }
+		alt={ photo.PhotoName }
+		class="photo-thumbnail"
+		onclick="openPhotoModal(this.dataset.imageUrl)"
+	/>
+}
+
+templ PlayButton(photo store.Photo) {
+	<button
+		class="photo-play-btn"
+		title="Play slideshow from this photo"
+		data-photo-name={ url.PathEscape(photo.PhotoName) }
+		hx-post={ playImageURL(photo) }
+		hx-on:click="event.stopPropagation(); toggleLoadingIcon(this);"
+		hx-trigger="click"
+	>
+		@PlayButtonIcons()
+	</button>
+}
+
+templ PlayButtonIcons() {
+	<span class="play-icon"><i class="fa-solid fa-play"></i></span>
+	<span class="loading-icon" style="display:none;"><i class="fa-solid fa-spinner fa-spin"></i></span>
+}
+
+templ DeleteButton(photo store.Photo) {
+	<button
+		class="photo-delete-btn"
+		title="Delete photo"
+		hx-delete={ deleteURL(photo) }
+		hx-target="this"
+		hx-swap="none"
+		hx-confirm="Delete this photo?"
+		hx-on::after-request="if(event.detail.xhr.status===200){ htmx.trigger(document.body, 'refreshPhotos') }"
+	>
+		<i class="fa-solid fa-trash-can"></i>
+	</button>
+}

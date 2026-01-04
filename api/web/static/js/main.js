@@ -47,6 +47,9 @@ let currentSettings = null;
 // Display state for slideshow view
 let currentDisplayEnabled = null;
 
+// Dark mode state
+let darkModeEnabled = true;
+
 function loadSettings() {
     fetch('/settings')
         .then(response => {
@@ -548,6 +551,48 @@ function saveSchedule() {
         });
 }
 
+function toggleLoadingIcon(btn) {
+  const playIcon = btn.querySelector(".play-icon");
+  const loadingIcon = btn.querySelector(".loading-icon");
+
+  if (playIcon) {
+    playIcon.style.display = "none";
+  }
+
+  if (loadingIcon) {
+    loadingIcon.style.display = "block";
+  }
+}
+
+function loadDarkMode() {
+    const saved = localStorage.getItem('darkMode');
+    if (saved !== null) {
+        darkModeEnabled = saved === 'true';
+        applyDarkMode(darkModeEnabled);
+        const btn = document.getElementById('toggle-dark-mode');
+        if (btn) {
+            setToggleButton(btn, darkModeEnabled);
+        }
+    }
+}
+
+function applyDarkMode(enabled) {
+    if (enabled) {
+        document.body.setAttribute('data-theme', 'dark');
+    } else {
+        document.body.removeAttribute('data-theme');
+    }
+    darkModeEnabled = enabled;
+    localStorage.setItem('darkMode', enabled ? 'true' : 'false');
+}
+
+function toggleDarkMode(btn) {
+    const current = btn.dataset.value === 'true';
+    const next = !current;
+    setToggleButton(btn, next);
+    applyDarkMode(next);
+}
+
 document.addEventListener('DOMContentLoaded', function() {
     const intervalInput = document.getElementById('interval-value');
     const intervalUnit = document.getElementById('interval-unit');
@@ -562,6 +607,7 @@ document.addEventListener('DOMContentLoaded', function() {
     loadSettings();
     loadDisplayState();
     loadSchedule();
+    loadDarkMode();
 });
 
 // Load schedule when switching to slideshow view

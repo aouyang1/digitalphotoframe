@@ -99,7 +99,7 @@
                         </div>
                         
                         <div class="schedule-time-row" style="display: flex; align-items: center; gap: 16px; margin-bottom: 12px;">
-                            <label for="schedule-start" style="font-size: 14px; color: #333; min-width: 60px;">Start:</label>
+                            <label for="schedule-start" style="font-size: 14px; min-width: 60px;">Start:</label>
                             <div class="time-input-wrapper">
                                 <input type="text" 
                                        id="schedule-start" 
@@ -112,7 +112,7 @@
                         </div>
                         
                         <div class="schedule-time-row" style="display: flex; align-items: center; gap: 16px; margin-bottom: 16px;">
-                            <label for="schedule-end" style="font-size: 14px; color: #333; min-width: 60px;">End:</label>
+                            <label for="schedule-end" style="font-size: 14px; min-width: 60px;">End:</label>
                             <div class="time-input-wrapper">
                                 <input type="text" 
                                        id="schedule-end" 
@@ -165,6 +165,14 @@
                             </button>
                         </div>
 
+                        <div class="settings-row">
+                            <span>Dark Mode</span>
+                            <button type="button" id="toggle-dark-mode" class="toggle-button toggle-off" data-value="false" onclick="toggleDarkMode(this)">
+                                <span class="toggle-label-on"></span>
+                                <span class="toggle-label-off"></span>
+                            </button>
+                        </div>
+                            
                         <div class="settings-actions">
                             <button type="button" id="settings-save-btn" class="settings-save-btn" disabled onclick="saveSettings()">Save</button>
                             <span id="settings-status" class="upload-status" style="display:none;"></span>
