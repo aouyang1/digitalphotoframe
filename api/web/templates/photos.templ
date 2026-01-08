@@ -41,6 +41,7 @@ templ PlayButton(photo store.Photo) {
 		hx-post={ playImageURL(photo) }
 		hx-on:click="event.stopPropagation(); toggleLoadingIcon(this);"
 		hx-trigger="click"
+		hx-on::after-request="enablePlayButtons()"
 	>
 		@PlayButtonIcons()
 	</button>

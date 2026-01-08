@@ -19,6 +19,62 @@ document.addEventListener('keydown', function(event) {
     }
 });
 
+function handleUploadResponse(event) {
+    const uploadError = document.getElementById('upload-error');
+    const uploadIndicator = document.getElementById('upload-indicator');
+    const fileName = document.getElementById('file-name');
+    const fileInput = document.getElementById('file-input');
+
+    // Hide upload indicator
+    if (uploadIndicator) {
+        uploadIndicator.style.display = 'none';
+    }
+
+    // Check response status
+    if (event.detail.xhr.status !== 200) {
+        // Extract error message from response
+        let errorMessage = 'Upload failed';
+        try {
+            errorMessage = event.detail.xhr.responseText || 'Upload failed';
+        } catch (e) {
+            errorMessage = 'Upload failed with status ' + event.detail.xhr.status;
+        }
+
+        // Display error
+        if (uploadError) {
+            uploadError.textContent = errorMessage;
+            uploadError.style.display = 'inline';
+            uploadError.classList.add('error');
+            uploadError.classList.remove('success');
+        }
+
+        // Clear file input and file name
+        if (fileInput) {
+            fileInput.value = '';
+        }
+        if (fileName) {
+            fileName.textContent = '';
+        }
+
+        // Prevent HTMX from swapping content on error
+        event.detail.shouldSwap = false;
+        event.preventDefault();
+    } else {
+        // Success - hide any previous errors
+        if (uploadError) {
+            uploadError.style.display = 'none';
+        }
+
+        // Clear file input and file name on success
+        if (fileInput) {
+            fileInput.value = '';
+        }
+        if (fileName) {
+            fileName.textContent = '';
+        }
+    }
+}
+
 function switchView(viewName, button) {
     const views = document.querySelectorAll('.view');
     views.forEach(function(view) {
@@ -562,6 +618,19 @@ function toggleLoadingIcon(btn) {
   if (loadingIcon) {
     loadingIcon.style.display = "block";
   }
+
+  // Disable all photo-play-btn buttons
+  const allPlayButtons = document.querySelectorAll(".photo-play-btn");
+  allPlayButtons.forEach(function(button) {
+    button.disabled = true;
+  });
+}
+
+function enablePlayButtons() {
+    const allPlayButtons = document.querySelectorAll(".photo-play-btn");
+    allPlayButtons.forEach(function(button) {
+      button.disabled = false;
+    });
 }
 
 function loadDarkMode() {
