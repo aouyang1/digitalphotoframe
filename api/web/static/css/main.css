@@ -405,6 +405,10 @@ body {
     cursor: not-allowed;
 }
 
+.settings-save-btn:hover:not(:disabled) {
+    background-color: #0056CC;
+}
+
 /* Schedule time input styles */
 .schedule-time-row {
     display: flex;
@@ -534,4 +538,17 @@ body[data-theme="dark"] #schedule-section {
 
 body[data-theme="dark"] .schedule-time-row label {
     color: #e0e0e0;
+}
+
+body[data-theme="dark"] .settings-save-btn {
+    background-color: #4A9EFF;
+}
+
+body[data-theme="dark"] .settings-save-btn:hover:not(:disabled) {
+    background-color: #3A8EEF;
+}
+
+body[data-theme="dark"] .settings-save-btn:disabled {
+    background-color: #555;
+    color: #888;
 }
