@@ -577,7 +577,7 @@ function saveSchedule() {
                     throw new Error('Failed to save schedule');
                 });
             }
-            return;
+            return response.json();
         })
         .then(data => {
             originalSchedule = {

@@ -616,7 +616,7 @@ func (ws *WebServer) handleUpdateSchedule(c *gin.Context) {
 		return
 	}
 
-	c.Status(http.StatusOK)
+	c.JSON(http.StatusOK, newSchedule)
 }
 
 func (ws *WebServer) handlePlayFromPhoto(c *gin.Context) {
